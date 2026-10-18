@@ -1,27 +1,35 @@
 # chess-software
 
-Proyecto de Ingeniería de Software II: sistema de salas para jugar al ajedrez.
+Proyecto de Ingeniería de Software II: sistema de salas de ajedrez.
+
+## Material de partida
+
+El proyecto se desarrolla a partir del código de clase. Cada sesión integra, revisa y prueba una parte del sistema.
 
 ## Estado actual
 
-Configuración inicial del proyecto Maven.
+Se ha integrado el modelo del tablero:
 
-Las siguientes etapas incorporarán el modelo del tablero, la serialización FEN, las reglas de movimiento, el backend, la persistencia y el frontend.
+- Board: posición inicial y movimientos estructurales.
+- Square: representación y validación de casillas.
+- Piece: tipos de piezas.
+- Color: colores.
+- File y Rank: columnas y filas.
 
-## Tecnologías
+Board protege su mapa mediante una copia defensiva. La operación move produce otro tablero y conserva el original.
 
-- Java 27.
-- Maven.
-- JUnit Jupiter para las pruebas.
+Las siguientes sesiones incorporarán FEN, validación de jugadas, backend, persistencia y frontend.
 
-## Compilación
+## Compilación y pruebas
 
-El proyecto necesita JDK 27.
+Se necesita un JDK 27 o superior y Maven.
 
-Para compilar y ejecutar las pruebas: `mvn clean verify`.
+Comando: `mvn clean verify`.
+
+Verificación de la sesión 01, realizada el 18 de octubre de 2026: 11 pruebas superadas, sin fallos, errores ni pruebas omitidas.
 
 ## Organización de ramas
 
-- `main`: versiones estables.
-- `develop`: integración del trabajo.
-- `feature/...`: desarrollo de cada tarea.
+- main: hitos estables.
+- develop: integración del trabajo comprobado.
+- feature/01-modelo-base: incorporación del modelo en la primera sesión.
