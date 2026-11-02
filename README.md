@@ -11,7 +11,8 @@ comprueba su comportamiento mediante pruebas.
 
 El proyecto incluye el modelo inmutable del tablero, la lectura y escritura de posiciones FEN y un servicio de reglas
 para movimientos ordinarios. También incorpora el contrato compartido de datos y los casos de uso del backend
-para crear salas, unir jugadores, consultar partidas, mover y abandonar.
+para crear salas, unir jugadores, consultar partidas, mover y abandonar. FileRoomRepository añade el almacenamiento
+de salas y movimientos en archivos y su recuperación al construir un nuevo servicio.
 
 - Board, Square, Piece, Color, File y Rank representan el tablero.
 - Position combina un tablero con su estado.
@@ -21,7 +22,8 @@ para crear salas, unir jugadores, consultar partidas, mover y abandonar.
 - MoveRules valida movimientos y devuelve una nueva Position.
 - El paquete contract define los datos de intercambio y su conversión a texto.
 - ChessService implementa el puerto ChessUseCases y coordina salas y partidas.
-- RoomRepository define el almacenamiento que necesita el servicio; su adaptador de disco está pendiente.
+- RoomRepository define el almacenamiento que necesita el servicio.
+- FileRoomRepository implementa ese puerto mediante archivos de sala con formato versionado.
 - BackendFactory compone el servicio con el repositorio recibido y los adaptadores FEN.
 
 FenPositionDeserializer compone los deserializadores de tablero y estado mediante interfaces.
@@ -89,19 +91,20 @@ Los campos requeridos deben estar presentes; se rechazan cantidades no numérica
 La versión se lee como long. El codec no valida reglas de ajedrez, legalidad del FEN ni toda la semántica de fechas,
 colores y estados; esas comprobaciones pertenecen a las capas correspondientes.
 
-En esta etapa se trabaja con String, con pruebas de nombres Unicode y caracteres de escape. La conversión entre
-texto y bytes mediante UTF-8 se hará en los adaptadores de comunicación. Properties.store añade un comentario con
-fecha; la equivalencia se comprueba recuperando los datos, sin exigir que el texto generado sea idéntico.
+WireCodec trabaja con String, con pruebas de nombres Unicode y caracteres de escape. FileRoomRepository convierte
+el contenido entre texto y bytes mediante UTF-8; los futuros adaptadores de comunicación harán su propia conversión.
+Properties.store añade un comentario con fecha; la equivalencia se comprueba recuperando los datos, sin exigir
+que el texto generado sea idéntico.
 
 El formato Properties es una decisión de este proyecto. Se conserva FEN para representar las posiciones.
-Todavía no hay rutas HTTP, servidor, almacenamiento en disco ni interfaz gráfica. Los casos de uso utilizan este
-contrato y un puerto de repositorio; sus adaptadores externos se incorporarán después.
+Los casos de uso y el adaptador de archivos utilizan este contrato. Todavía no hay rutas HTTP, servidor ni interfaz
+gráfica; los adaptadores de comunicación se incorporarán después.
 
 ## Casos de uso del backend
 
 El paquete `backend` incorpora la coordinación de salas y partidas. El servicio depende de interfaces para
 consultar y guardar las salas y para convertir las posiciones FEN; las reglas del ajedrez siguen en MoveRules.
-Los adaptadores concretos de almacenamiento y comunicación se incorporarán en etapas posteriores.
+FileRoomRepository incorpora el almacenamiento en disco. Los adaptadores de comunicación se incorporarán en etapas posteriores.
 
 ### Responsabilidades y composición
 
@@ -115,15 +118,15 @@ Los adaptadores concretos de almacenamiento y comunicación se incorporarán en 
 | RepositoryException | Comunica un fallo del repositorio al caso de uso. |
 | BackendFactory | Compone ChessService con un RoomRepository recibido y los adaptadores FEN concretos. |
 
-Estos siete archivos de producción se acompañan de ChessServiceTest. Los puertos expresan las operaciones
+La sesión 05 incorporó estos siete archivos de producción y ChessServiceTest. Los puertos expresan las operaciones
 necesarias; BackendFactory conecta las implementaciones por composición. ChessService recibe RoomRepository,
 PositionSerializer y PositionDeserializer, y utiliza MoveRules para validar los movimientos. No conoce rutas de
 archivos, peticiones HTTP ni componentes gráficos.
 
 MemoryRepository es únicamente un doble definido dentro de ChessServiceTest. Conserva datos en memoria y permite
 simular un fallo al guardar. Sirve para probar el servicio sin disco ni red; no constituye almacenamiento persistente
-ni un adaptador de producción. Esta sesión tampoco añade un servidor HTTP, una interfaz gráfica o un punto de entrada
-ejecutable de la aplicación.
+ni un adaptador de producción. FileRoomRepository aporta ahora la implementación de almacenamiento en disco.
+El proyecto aún no incluye un servidor HTTP, una interfaz gráfica o un punto de entrada ejecutable de la aplicación.
 
 ### Salas, autorización y versiones
 
@@ -149,14 +152,69 @@ si abandonan blancas, ganan negras; si abandonan negras, ganan blancas. El aband
 versión vigente, pero puede solicitarse fuera del turno propio. El histórico se conserva. No hay adjudicación
 automática por mate, ahogado o tablas.
 
+## Persistencia de salas en archivos
+
+La sesión 06 incorpora FileRoomRepository y FileRoomRepositoryTest. FileRoomRepository es un adaptador de salida
+que implementa RoomRepository: el servicio conserva su dependencia de la interfaz y puede recibir este repositorio
+mediante BackendFactory. El almacenamiento se realiza en archivos, sin una base de datos SQL.
+
+El constructor recibe un Path, lo convierte en una ruta absoluta normalizada y crea el directorio si es necesario.
+La ubicación se proporciona por composición; su configuración desde el futuro arranque del backend queda pendiente.
+Las pruebas usan directorios temporales de JUnit mediante @TempDir.
+
+### Formato y escritura
+
+Cada sala ocupa un archivo con el nombre de su identificador UUID seguido de `.room`. El contenido es texto
+Properties codificado en UTF-8. El formato incluye `schema=1`, la RoomView serializada en el campo `room` y los
+campos internos `whiteTokenHash` y `blackTokenHash`. Se guardan los hashes, no los tokens entregados a los jugadores.
+El archivo conserva los jugadores, estado, versión, fecha de creación, posición FEN e histórico de movimientos.
+
+save valida la sala y construye el contenido completo. Después crea un archivo temporal en el mismo directorio,
+escribe todos los bytes mediante FileChannel y llama a force(true). Finalmente sustituye el archivo de la sala con
+ATOMIC_MOVE y REPLACE_EXISTING. Si el sistema de archivos no permite la sustitución atómica, se comunica el error
+mediante RepositoryException; no se utiliza una copia no atómica como alternativa.
+
+Esta estrategia fuerza el contenido del temporal y realiza la sustitución atómica del archivo. No incluye forzar
+el directorio padre ni acredita la recuperación ante cualquier fallo de hardware o corte de energía. El servicio
+publica el nuevo estado en memoria únicamente después de que save haya terminado correctamente.
+
+### Recuperación y comprobaciones
+
+findAll recorre los archivos terminados en `.room`, comprueba su tamaño y exige la versión de formato 1. Los
+archivos temporales `.tmp` no se interpretan como partidas. Cada archivo de sala admite como máximo 16 MiB,
+tanto al escribirlo como al recuperarlo.
+
+La recuperación valida el UUID y su coincidencia con el nombre del archivo, los nombres de jugadores, los estados
+admitidos, las fechas como instantes, los hashes y la relación entre versión, estado y número de movimientos.
+También comprueba que una sala WAITING no tenga segundo jugador ni movimientos.
+
+Para comprobar el histórico, parte de Position.initial y reproduce sus movimientos con MoveRules. Revisa el orden,
+las casillas, la promoción, el jugador y la fecha de cada movimiento. La posición FEN calculada debe coincidir con
+la guardada en cada paso y con la posición final de la sala. Así se detectan históricos o posiciones incoherentes
+con las reglas implementadas.
+
+Si un archivo está corrupto, tiene un formato desconocido o contiene datos incoherentes, la carga se detiene con
+RepositoryException. El archivo se conserva para revisarlo; no se descarta la partida silenciosamente ni se borra
+el archivo dañado. Un temporal que haya quedado de una escritura interrumpida no sustituye al archivo confirmado.
+
+### Alcance de la coordinación
+
+Se debe utilizar un único servicio activo, en un único proceso, por directorio de partidas. La sincronización de
+los métodos pertenece a cada instancia; no hay un bloqueo compartido entre instancias o procesos que permita
+utilizar el mismo directorio simultáneamente. Las salas se recuperan al crear el servicio; los cambios externos
+en los archivos no se recargan automáticamente mientras está funcionando.
+
+Esta etapa permite conservar y recuperar partidas mediante el adaptador de archivos. El punto de entrada
+BackendMain, el servidor HTTP, los clientes remotos y la interfaz gráfica siguen pendientes.
+
 ## Hito de dominio y contrato
 
 El hito `milestone-01-domain-contract` agrupa el modelo, FEN, las reglas de movimiento y el contrato compartido.
 Es una etapa intermedia del proyecto, sin punto de entrada de la aplicación completa. La versión 1.0.0 del POM
 se mantiene como identificador del artefacto durante el desarrollo; la entrega final tendrá su propia etiqueta.
 
-main conserva este primer hito, comprobado con 52 pruebas. develop incorpora la sesión 05 sobre esa base. El código
-de los casos de uso del backend no forma parte de la etiqueta milestone-01-domain-contract.
+main conserva este primer hito, comprobado con 52 pruebas. develop incorpora las sesiones 05 y 06 sobre esa base.
+Los casos de uso del backend y el adaptador de archivos no forman parte de la etiqueta milestone-01-domain-contract.
 
 ## Compilación y pruebas
 
@@ -171,8 +229,10 @@ Verificaciones locales:
 - Sesión 03, 22 de octubre de 2026: 50 pruebas superadas en total.
 - Sesión 04, 28 de octubre de 2026: 52 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 05, 31 de octubre de 2026: 57 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 06, 2 de noviembre de 2026: 62 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 
-Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5.
+Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
+FileRoomRepositoryTest, 5.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -185,6 +245,13 @@ espectadores, turnos incorrectos, versiones desfasadas y movimientos inválidos;
 publicar cambios; la competencia de dos jugadores por el puesto de negras; y nombres inválidos, salas inexistentes
 o puestos ya ocupados. Se ejecutan con MemoryRepository, sin almacenamiento en disco, HTTP ni interfaz gráfica.
 
+Los cinco casos de FileRoomRepositoryTest usan almacenamiento real en @TempDir. Comprueban la recuperación de
+una partida al construir nuevas instancias de repositorio y servicio sobre el mismo directorio temporal, y permiten
+continuar con negras utilizando el token obtenido antes de esa recuperación. También comprueban que no se guardan
+tokens en claro, que un archivo corrupto detiene la carga y se conserva, que se detecta un nombre de archivo
+manipulado, que un temporal sobrante no reemplaza una partida y que una ruta ocupada por un archivo se rechaza
+como directorio. El reinicio se simula mediante nuevas instancias; estas pruebas no arrancan procesos, HTTP ni UI.
+
 ## Organización de ramas
 
 - main: hitos estables.
@@ -194,7 +261,8 @@ o puestos ya ocupados. Se ejecutan con MemoryRepository, sin almacenamiento en d
 - feature/03-move-validation: reglas de movimiento y protección del rey.
 - feature/04-shared-contract: datos compartidos y formato de intercambio.
 - feature/05-backend-use-cases: casos de uso, autorización, versiones y pruebas del backend.
+- feature/06-file-persistence: almacenamiento en archivos, recuperación y pruebas del repositorio.
 
 ## Próximas etapas
 
-Adaptador de persistencia en disco, arranque del backend, comunicación HTTP e interfaz gráfica.
+Arranque del backend mediante BackendMain, configuración de su directorio de datos, comunicación HTTP e interfaz gráfica.
