@@ -12,7 +12,8 @@ comprueba su comportamiento mediante pruebas.
 El proyecto incluye el modelo inmutable del tablero, la lectura y escritura de posiciones FEN y un servicio de reglas
 para movimientos ordinarios. También incorpora el contrato compartido de datos y los casos de uso del backend
 para crear salas, unir jugadores, consultar partidas, mover y abandonar. FileRoomRepository añade el almacenamiento
-de salas y movimientos en archivos y su recuperación al construir un nuevo servicio.
+de salas y movimientos en archivos y su recuperación al construir un nuevo servicio. HttpChessServer expone los
+casos de uso mediante HTTP y BackendMain permite arrancar el backend de forma independiente.
 
 - Board, Square, Piece, Color, File y Rank representan el tablero.
 - Position combina un tablero con su estado.
@@ -25,6 +26,8 @@ de salas y movimientos en archivos y su recuperación al construir un nuevo serv
 - RoomRepository define el almacenamiento que necesita el servicio.
 - FileRoomRepository implementa ese puerto mediante archivos de sala con formato versionado.
 - BackendFactory compone el servicio con el repositorio recibido y los adaptadores FEN.
+- HttpChessServer transforma peticiones HTTP en llamadas al puerto ChessUseCases.
+- BackendMain configura y conecta el repositorio, el servicio y el servidor.
 
 FenPositionDeserializer compone los deserializadores de tablero y estado mediante interfaces.
 
@@ -62,7 +65,7 @@ de la legalidad de posiciones FEN arbitrarias.
 ## Contrato compartido
 
 El paquete `software.ulpgc.chess.contract` contiene datos de intercambio independientes del modelo de dominio,
-la interfaz gráfica y los futuros adaptadores de red.
+la interfaz gráfica y los adaptadores de red.
 
 | Tipo | Contenido |
 |---|---|
@@ -92,19 +95,20 @@ La versión se lee como long. El codec no valida reglas de ajedrez, legalidad de
 colores y estados; esas comprobaciones pertenecen a las capas correspondientes.
 
 WireCodec trabaja con String, con pruebas de nombres Unicode y caracteres de escape. FileRoomRepository convierte
-el contenido entre texto y bytes mediante UTF-8; los futuros adaptadores de comunicación harán su propia conversión.
+el contenido entre texto y bytes mediante UTF-8; HttpChessServer aplica esa misma codificación a los mensajes HTTP.
 Properties.store añade un comentario con fecha; la equivalencia se comprueba recuperando los datos, sin exigir
 que el texto generado sea idéntico.
 
 El formato Properties es una decisión de este proyecto. Se conserva FEN para representar las posiciones.
-Los casos de uso y el adaptador de archivos utilizan este contrato. Todavía no hay rutas HTTP, servidor ni interfaz
-gráfica; los adaptadores de comunicación se incorporarán después.
+Los casos de uso, el adaptador de archivos y el servidor HTTP utilizan este contrato. El frontend todavía no está
+integrado; las operaciones HTTP pueden comprobarse sin una interfaz gráfica.
 
 ## Casos de uso del backend
 
 El paquete `backend` incorpora la coordinación de salas y partidas. El servicio depende de interfaces para
 consultar y guardar las salas y para convertir las posiciones FEN; las reglas del ajedrez siguen en MoveRules.
-FileRoomRepository incorpora el almacenamiento en disco. Los adaptadores de comunicación se incorporarán en etapas posteriores.
+FileRoomRepository incorpora el almacenamiento en disco y HttpChessServer el acceso mediante HTTP.
+El cliente de comunicación del frontend se incorporará en una etapa posterior.
 
 ### Responsabilidades y composición
 
@@ -126,7 +130,7 @@ archivos, peticiones HTTP ni componentes gráficos.
 MemoryRepository es únicamente un doble definido dentro de ChessServiceTest. Conserva datos en memoria y permite
 simular un fallo al guardar. Sirve para probar el servicio sin disco ni red; no constituye almacenamiento persistente
 ni un adaptador de producción. FileRoomRepository aporta ahora la implementación de almacenamiento en disco.
-El proyecto aún no incluye un servidor HTTP, una interfaz gráfica o un punto de entrada ejecutable de la aplicación.
+BackendMain y HttpChessServer permiten ejecutar y consultar el backend; la interfaz gráfica sigue pendiente.
 
 ### Salas, autorización y versiones
 
@@ -159,7 +163,7 @@ que implementa RoomRepository: el servicio conserva su dependencia de la interfa
 mediante BackendFactory. El almacenamiento se realiza en archivos, sin una base de datos SQL.
 
 El constructor recibe un Path, lo convierte en una ruta absoluta normalizada y crea el directorio si es necesario.
-La ubicación se proporciona por composición; su configuración desde el futuro arranque del backend queda pendiente.
+La ubicación se proporciona por composición; BackendMain la configura mediante la opción --data.
 Las pruebas usan directorios temporales de JUnit mediante @TempDir.
 
 ### Formato y escritura
@@ -204,8 +208,99 @@ los métodos pertenece a cada instancia; no hay un bloqueo compartido entre inst
 utilizar el mismo directorio simultáneamente. Las salas se recuperan al crear el servicio; los cambios externos
 en los archivos no se recargan automáticamente mientras está funcionando.
 
-Esta etapa permite conservar y recuperar partidas mediante el adaptador de archivos. El punto de entrada
-BackendMain, el servidor HTTP, los clientes remotos y la interfaz gráfica siguen pendientes.
+La persistencia se integra con BackendMain y HttpChessServer. Los clientes del frontend y la interfaz gráfica
+siguen pendientes.
+
+## API HTTP y arranque del backend
+
+La sesión 07 incorpora HttpChessServer, BackendMain y HttpChessServerTest, además del manifiesto ejecutable del
+JAR y el script opcional scripts/backend.ps1. HttpChessServer es el adaptador de entrada: transforma las peticiones
+HTTP en operaciones del puerto ChessUseCases y convierte sus resultados y errores en respuestas. La autorización,
+los turnos y los cambios de partida permanecen en ChessService.
+
+BackendMain compone FileRoomRepository, el servicio obtenido mediante BackendFactory y HttpChessServer. El backend
+puede ejecutarse como proceso independiente; la interfaz de usuario y el cliente HTTP del frontend siguen pendientes.
+
+### Rutas y mensajes
+
+La dirección predeterminada es `http://127.0.0.1:8080`. Los cuerpos se representan como texto Properties en UTF-8;
+las respuestas usan `Content-Type: text/plain; charset=UTF-8`. Los clientes deben enviar el texto con esa misma
+codificación. No se utiliza JSON ni un formulario URL-encoded.
+
+| Método y ruta | Campos del cuerpo | Respuesta correcta |
+|---|---|---|
+| GET /health | Sin cuerpo. | 200, con `status=ok`. |
+| GET /rooms | Sin cuerpo. | 200, listado de RoomView. |
+| POST /rooms | `player`. | 201, SessionView del jugador de blancas y cabecera Location de la sala. |
+| GET /rooms/{id} | Sin cuerpo. | 200, RoomView con posición e histórico. |
+| POST /rooms/{id}/join | `player`. | 200, SessionView del jugador de negras. |
+| POST /rooms/{id}/moves | `from`, `to`, `version` y `promotion` opcional. | 200, RoomView actualizada. |
+| POST /rooms/{id}/resign | `version`. | 200, RoomView con resultado por abandono. |
+
+Las operaciones moves y resign requieren una única cabecera `X-Player-Token` con la credencial recibida al crear
+la sala o unirse. La versión se envía en el cuerpo como entero no negativo y debe coincidir con la versión actual.
+Las consultas de sala y listado son públicas para quien pueda conectarse al servidor, y sus respuestas no incluyen
+tokens ni hashes. Crear o unirse devuelve la SessionView destinada a ese jugador.
+
+Las casillas se escriben como `e2` y `e4`. promotion puede ser `q`, `r`, `b` o `n`; también puede omitirse o
+estar vacía. Si el movimiento alcanza la última fila y no se elige una pieza, se promociona a dama. El servicio
+sigue rechazando el enroque, la captura al paso y las demás jugadas fuera del alcance implementado.
+
+Cada cuerpo POST admite como máximo 8192 bytes. Se rechazan con 400 los cuerpos mayores, el texto UTF-8 mal
+formado, los campos desconocidos para esa operación y los datos inválidos. Los errores también se expresan como
+Properties y contienen una clave `error` con un mensaje.
+
+| Código HTTP | Significado en esta API |
+|---|---|
+| 200 | Consulta u operación realizada correctamente. |
+| 201 | Sala creada. |
+| 400 | Datos incompletos o inválidos, movimiento inválido o cuerpo no admitido. |
+| 403 | Credencial de jugador ausente o incorrecta. |
+| 404 | Ruta o sala inexistente. |
+| 405 | Método no admitido; la cabecera Allow indica los métodos de esa ruta. |
+| 409 | Versión desfasada, turno incorrecto, sala completa o partida fuera del estado requerido. |
+| 500 | Fallo de almacenamiento o error interno. |
+
+### Compilar y ejecutar
+
+El proyecto mantiene JDK 27 y `maven.compiler.release=27`. En el POM se añade al plugin de JAR el manifiesto con
+`software.ulpgc.chess.backend.BackendMain` como Main-Class, conservando las versiones y la configuración del
+proyecto. El POM antiguo del kit con release 17 no corresponde a esta configuración.
+
+Desde la raíz del proyecto, primero se compila y después se ejecuta el JAR:
+
+```text
+mvn clean verify
+java -version
+java -jar target/chess-software-1.0.0.jar --help
+java -jar target/chess-software-1.0.0.jar --host 127.0.0.1 --port 8080 --data data
+```
+
+El comando java debe usar el JDK 27. Elegir ese SDK en IntelliJ no modifica por sí solo el PATH de una terminal.
+Si java no se reconoce o apunta a otra versión, puede utilizarse la ruta completa a bin/java.exe del SDK configurado
+en IntelliJ; en PowerShell esa ruta entre comillas se ejecuta con el operador `&`.
+
+`--help`, utilizado solo, muestra el uso sin arrancar el servidor. El arranque admite estas opciones:
+
+| Opción | Valor predeterminado | Función |
+|---|---|---|
+| --host | 127.0.0.1 | Interfaz en la que escucha el backend; por defecto sólo el equipo local. |
+| --port | 8080 | Puerto entre 1 y 65535. |
+| --data | data | Directorio de partidas, relativo al directorio de ejecución si no es una ruta absoluta. |
+
+Al arrancar se recuperan las partidas del directorio indicado y se muestra la dirección del servidor y la ruta de
+datos utilizada. El proceso permanece atendiendo peticiones hasta detenerlo, por ejemplo con Ctrl+C. Para recuperar
+las mismas partidas en otro arranque debe utilizarse el mismo directorio. Se mantiene el límite de un único servicio
+activo y proceso por directorio; el adaptador no coordina varios escritores.
+
+El script opcional ofrece los mismos valores desde PowerShell:
+
+```powershell
+.\scripts\backend.ps1 -Port 8080 -Data data -BindAddress 127.0.0.1
+```
+
+El script cambia el directorio de trabajo a la raíz del proyecto y utiliza java desde el PATH. Si los scripts están bloqueados, se puede
+usar directamente el comando del JAR; no es necesario cambiar la política de ejecución de PowerShell.
 
 ## Hito de dominio y contrato
 
@@ -213,8 +308,8 @@ El hito `milestone-01-domain-contract` agrupa el modelo, FEN, las reglas de movi
 Es una etapa intermedia del proyecto, sin punto de entrada de la aplicación completa. La versión 1.0.0 del POM
 se mantiene como identificador del artefacto durante el desarrollo; la entrega final tendrá su propia etiqueta.
 
-main conserva este primer hito, comprobado con 52 pruebas. develop incorpora las sesiones 05 y 06 sobre esa base.
-Los casos de uso del backend y el adaptador de archivos no forman parte de la etiqueta milestone-01-domain-contract.
+main conserva este primer hito, comprobado con 52 pruebas. develop incorpora las sesiones 05, 06 y 07 sobre esa base.
+Los casos de uso del backend, la persistencia y la API HTTP no forman parte de la etiqueta milestone-01-domain-contract.
 
 ## Compilación y pruebas
 
@@ -230,9 +325,10 @@ Verificaciones locales:
 - Sesión 04, 28 de octubre de 2026: 52 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 05, 31 de octubre de 2026: 57 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 06, 2 de noviembre de 2026: 62 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 07, 3 de noviembre de 2026: 65 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
-FileRoomRepositoryTest, 5.
+FileRoomRepositoryTest, 5; HttpChessServerTest, 3.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -252,6 +348,16 @@ tokens en claro, que un archivo corrupto detiene la carga y se conserva, que se 
 manipulado, que un temporal sobrante no reemplaza una partida y que una ruta ocupada por un archivo se rechaza
 como directorio. El reinicio se simula mediante nuevas instancias; estas pruebas no arrancan procesos, HTTP ni UI.
 
+Los tres casos de HttpChessServerTest realizan peticiones HTTP reales sobre loopback. El primero usa un mismo
+HttpClient para representar las identidades de Ana y Luis mediante tokens distintos y realizar consultas públicas
+como observador. Comprueba creación, unión, movimientos, autorización, versiones, consulta y listado; después cierra
+y recrea HttpChessServer y el servicio dentro de la misma JVM, conserva el directorio temporal y continúa la partida.
+El segundo caso rechaza rutas, métodos, cuerpos y datos inválidos sin modificar las salas. El tercero simula un fallo
+de almacenamiento mediante MemoryRepository y comprueba la respuesta 500 sin publicar la sala.
+
+Estas pruebas no abren ventanas ni ejecutan el JAR en procesos separados. Los comandos de arranque anteriores
+describen cómo utilizar la aplicación; no constituyen un registro de una prueba manual del proceso.
+
 ## Organización de ramas
 
 - main: hitos estables.
@@ -262,7 +368,8 @@ como directorio. El reinicio se simula mediante nuevas instancias; estas pruebas
 - feature/04-shared-contract: datos compartidos y formato de intercambio.
 - feature/05-backend-use-cases: casos de uso, autorización, versiones y pruebas del backend.
 - feature/06-file-persistence: almacenamiento en archivos, recuperación y pruebas del repositorio.
+- feature/07-http-api: API HTTP, arranque del backend y empaquetado ejecutable.
 
 ## Próximas etapas
 
-Arranque del backend mediante BackendMain, configuración de su directorio de datos, comunicación HTTP e interfaz gráfica.
+Casos de uso del frontend, adaptador de cliente HTTP, interfaz gráfica e integración de ambas aplicaciones.
