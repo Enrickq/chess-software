@@ -13,7 +13,8 @@ El proyecto incluye el modelo inmutable del tablero, la lectura y escritura de p
 para movimientos ordinarios. También incorpora el contrato compartido de datos y los casos de uso del backend
 para crear salas, unir jugadores, consultar partidas, mover y abandonar. FileRoomRepository añade el almacenamiento
 de salas y movimientos en archivos y su recuperación al construir un nuevo servicio. HttpChessServer expone los
-casos de uso mediante HTTP y BackendMain permite arrancar el backend de forma independiente.
+casos de uso mediante HTTP y BackendMain permite arrancar el backend de forma independiente. El frontend incorpora
+su controlador de aplicación para gestionar salas, sesiones locales y la reproducción del histórico.
 
 - Board, Square, Piece, Color, File y Rank representan el tablero.
 - Position combina un tablero con su estado.
@@ -28,6 +29,7 @@ casos de uso mediante HTTP y BackendMain permite arrancar el backend de forma in
 - BackendFactory compone el servicio con el repositorio recibido y los adaptadores FEN.
 - HttpChessServer transforma peticiones HTTP en llamadas al puerto ChessUseCases.
 - BackendMain configura y conecta el repositorio, el servicio y el servidor.
+- ChessController coordina las acciones del frontend mediante su propio puerto ChessService.
 
 FenPositionDeserializer compone los deserializadores de tablero y estado mediante interfaces.
 
@@ -100,8 +102,9 @@ Properties.store añade un comentario con fecha; la equivalencia se comprueba re
 que el texto generado sea idéntico.
 
 El formato Properties es una decisión de este proyecto. Se conserva FEN para representar las posiciones.
-Los casos de uso, el adaptador de archivos y el servidor HTTP utilizan este contrato. El frontend todavía no está
-integrado; las operaciones HTTP pueden comprobarse sin una interfaz gráfica.
+Los casos de uso del backend, el adaptador de archivos, el servidor HTTP y el controlador del frontend utilizan
+este contrato. Las operaciones HTTP pueden comprobarse sin una interfaz gráfica; el frontend todavía no se
+conecta al servidor mediante un cliente HTTP propio.
 
 ## Casos de uso del backend
 
@@ -208,7 +211,7 @@ los métodos pertenece a cada instancia; no hay un bloqueo compartido entre inst
 utilizar el mismo directorio simultáneamente. Las salas se recuperan al crear el servicio; los cambios externos
 en los archivos no se recargan automáticamente mientras está funcionando.
 
-La persistencia se integra con BackendMain y HttpChessServer. Los clientes del frontend y la interfaz gráfica
+La persistencia se integra con BackendMain y HttpChessServer. El adaptador HTTP del frontend y su interfaz gráfica
 siguen pendientes.
 
 ## API HTTP y arranque del backend
@@ -302,14 +305,61 @@ El script opcional ofrece los mismos valores desde PowerShell:
 El script cambia el directorio de trabajo a la raíz del proyecto y utiliza java desde el PATH. Si los scripts están bloqueados, se puede
 usar directamente el comando del JAR; no es necesario cambiar la política de ejecución de PowerShell.
 
-## Hito de dominio y contrato
+## Casos de uso del frontend
+
+La sesión 08 incorpora el puerto `frontend.ports.ChessService`, ServiceException, ChessController y
+ChessControllerTest. La interfaz del frontend expresa las operaciones que necesita el controlador; es distinta
+de la clase de aplicación `backend.application.ChessService`. Ambas partes reutilizan los datos de intercambio
+RoomView y SessionView, sin que el controlador dependa de una clase del backend.
+
+| Tipo | Responsabilidad |
+|---|---|
+| frontend.ports.ChessService | Puerto de salida para listar salas, consultar una sala, crearla, unirse, mover y abandonar. |
+| ServiceException | Comunica un fallo del servicio a través del puerto sin exigir tipos de HTTP. |
+| ChessController | Coordina las acciones del usuario y mantiene el listado, la sala abierta, las sesiones locales y la selección del histórico. |
+| ChessController.View | Instantánea inmutable con la sala pública, el color local, el indicador de directo, el índice y el FEN visible. |
+
+ChessController recibe el puerto por constructor. En las pruebas se compone con FakeService; el adaptador HTTP
+real se añadirá después. La aplicación del frontend no contiene todavía una ventana Swing, un punto de entrada,
+un cliente HTTP ni un temporizador de actualización. El llamador ejecuta las acciones del controlador de forma
+secuencial.
+
+### Salas, sesiones y órdenes
+
+Crear o unirse guarda la SessionView en memoria, asociada a su sala. La consulta de una sala no ocupa una plaza:
+si el controlador ya conserva una sesión para ella, puede mostrar el color del jugador; si no, actúa como espectador.
+Volver a abrir una sala propia reutiliza su sesión local, sin volver a solicitar el puesto de negras. Las sesiones
+se conservan mientras existe ese controlador y no se escriben en disco.
+
+Mover y abandonar requieren una sala activa, una sesión de jugador y la vista en directo. El controlador envía
+el token correspondiente y la última versión conocida a través del puerto; la autorización final y las reglas
+siguen en el backend. El token se utiliza para esas órdenes y no forma parte de ChessController.View.
+
+### Estado actual e histórico
+
+Sin sala abierta, la vista muestra el FEN inicial. Dentro de una sala, la vista en directo muestra la última posición
+recibida. `replayAt(0)` selecciona la posición inicial; `replayAt(n)` selecciona la posición registrada tras el
+movimiento n, dentro del intervalo disponible. La reproducción sólo cambia la vista local y bloquea las órdenes
+de mover y abandonar. `live()` vuelve a mostrar la posición más reciente conocida.
+
+`refresh()` consulta la sala abierta o actualiza el listado si aún no hay sala. Una actualización de la partida
+conserva la selección histórica mientras su índice siga disponible. Si la consulta falla antes de devolver datos,
+se mantienen la última vista y la sesión local; un llamador puede reintentar la operación.
+
+## Hitos del proyecto
 
 El hito `milestone-01-domain-contract` agrupa el modelo, FEN, las reglas de movimiento y el contrato compartido.
 Es una etapa intermedia del proyecto, sin punto de entrada de la aplicación completa. La versión 1.0.0 del POM
 se mantiene como identificador del artefacto durante el desarrollo; la entrega final tendrá su propia etiqueta.
 
-main conserva este primer hito, comprobado con 52 pruebas. develop incorpora las sesiones 05, 06 y 07 sobre esa base.
-Los casos de uso del backend, la persistencia y la API HTTP no forman parte de la etiqueta milestone-01-domain-contract.
+El primer hito se comprobó con 52 pruebas. Los casos de uso del backend, la persistencia y la API HTTP quedan
+fuera de esa etiqueta.
+
+El segundo hito previsto, `milestone-02-backend-and-frontend-core`, reúne el backend ejecutable con HTTP y
+persistencia y los casos de uso del frontend comprobados con un doble. El adaptador HTTP del frontend y Swing
+se incorporarán después. Los cambios se integran primero en develop; al cerrar la sesión se integra develop
+en main, se comprueba con `mvn clean verify` y se etiqueta el commit si pasa la verificación. La rama main del
+repositorio remoto pasa del primer al segundo hito al publicar la integración comprobada.
 
 ## Compilación y pruebas
 
@@ -326,9 +376,10 @@ Verificaciones locales:
 - Sesión 05, 31 de octubre de 2026: 57 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 06, 2 de noviembre de 2026: 62 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 07, 3 de noviembre de 2026: 65 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 08, 5 de noviembre de 2026: 74 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
-FileRoomRepositoryTest, 5; HttpChessServerTest, 3.
+FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 9.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -358,6 +409,13 @@ de almacenamiento mediante MemoryRepository y comprueba la respuesta 500 sin pub
 Estas pruebas no abren ventanas ni ejecutan el JAR en procesos separados. Los comandos de arranque anteriores
 describen cómo utilizar la aplicación; no constituyen un registro de una prueba manual del proceso.
 
+Los nueve casos de ChessControllerTest utilizan FakeService, una implementación del puerto del frontend para
+pruebas. Comprueban la sustitución del servicio y la entrada de nombre, el envío del token y versión observados,
+el bloqueo del espectador, la conservación de la posición histórica al llegar movimientos, los límites del
+histórico, la conservación de estado ante un fallo simulado del servicio, el rechazo de entradas vacías, la
+reutilización de una sesión local y el bloqueo de jugadas en una sala en espera. No realizan peticiones HTTP
+ni abren ventanas.
+
 ## Organización de ramas
 
 - main: hitos estables.
@@ -369,7 +427,8 @@ describen cómo utilizar la aplicación; no constituyen un registro de una prueb
 - feature/05-backend-use-cases: casos de uso, autorización, versiones y pruebas del backend.
 - feature/06-file-persistence: almacenamiento en archivos, recuperación y pruebas del repositorio.
 - feature/07-http-api: API HTTP, arranque del backend y empaquetado ejecutable.
+- feature/08-frontend-use-cases: puerto del frontend, controlador, sesiones locales e histórico.
 
 ## Próximas etapas
 
-Casos de uso del frontend, adaptador de cliente HTTP, interfaz gráfica e integración de ambas aplicaciones.
+Adaptador de cliente HTTP del frontend, interfaz gráfica Swing e integración de ambas aplicaciones.
