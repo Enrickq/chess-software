@@ -15,6 +15,7 @@ para crear salas, unir jugadores, consultar partidas, mover y abandonar. FileRoo
 de salas y movimientos en archivos y su recuperación al construir un nuevo servicio. HttpChessServer expone los
 casos de uso mediante HTTP y BackendMain permite arrancar el backend de forma independiente. El frontend incorpora
 su controlador de aplicación para gestionar salas, sesiones locales y la reproducción del histórico.
+HttpChessService implementa su puerto de salida y permite comunicarse con el backend mediante HTTP.
 
 - Board, Square, Piece, Color, File y Rank representan el tablero.
 - Position combina un tablero con su estado.
@@ -30,6 +31,7 @@ su controlador de aplicación para gestionar salas, sesiones locales y la reprod
 - HttpChessServer transforma peticiones HTTP en llamadas al puerto ChessUseCases.
 - BackendMain configura y conecta el repositorio, el servicio y el servidor.
 - ChessController coordina las acciones del frontend mediante su propio puerto ChessService.
+- HttpChessService implementa ese puerto mediante HttpClient y el contrato Properties UTF-8.
 
 FenPositionDeserializer compone los deserializadores de tablero y estado mediante interfaces.
 
@@ -103,15 +105,15 @@ que el texto generado sea idéntico.
 
 El formato Properties es una decisión de este proyecto. Se conserva FEN para representar las posiciones.
 Los casos de uso del backend, el adaptador de archivos, el servidor HTTP y el controlador del frontend utilizan
-este contrato. Las operaciones HTTP pueden comprobarse sin una interfaz gráfica; el frontend todavía no se
-conecta al servidor mediante un cliente HTTP propio.
+este contrato. HttpChessService permite conectar el controlador del frontend con el servidor mediante HTTP.
+Las operaciones pueden comprobarse sin una interfaz gráfica.
 
 ## Casos de uso del backend
 
 El paquete `backend` incorpora la coordinación de salas y partidas. El servicio depende de interfaces para
 consultar y guardar las salas y para convertir las posiciones FEN; las reglas del ajedrez siguen en MoveRules.
 FileRoomRepository incorpora el almacenamiento en disco y HttpChessServer el acceso mediante HTTP.
-El cliente de comunicación del frontend se incorporará en una etapa posterior.
+HttpChessService implementa el cliente de comunicación del frontend mediante su puerto de servicio.
 
 ### Responsabilidades y composición
 
@@ -211,8 +213,8 @@ los métodos pertenece a cada instancia; no hay un bloqueo compartido entre inst
 utilizar el mismo directorio simultáneamente. Las salas se recuperan al crear el servicio; los cambios externos
 en los archivos no se recargan automáticamente mientras está funcionando.
 
-La persistencia se integra con BackendMain y HttpChessServer. El adaptador HTTP del frontend y su interfaz gráfica
-siguen pendientes.
+La persistencia se integra con BackendMain y HttpChessServer. HttpChessService accede a través de esta API;
+la interfaz gráfica sigue pendiente.
 
 ## API HTTP y arranque del backend
 
@@ -222,7 +224,8 @@ HTTP en operaciones del puerto ChessUseCases y convierte sus resultados y errore
 los turnos y los cambios de partida permanecen en ChessService.
 
 BackendMain compone FileRoomRepository, el servicio obtenido mediante BackendFactory y HttpChessServer. El backend
-puede ejecutarse como proceso independiente; la interfaz de usuario y el cliente HTTP del frontend siguen pendientes.
+puede ejecutarse como proceso independiente y recibir peticiones de HttpChessService. La interfaz de usuario
+sigue pendiente.
 
 ### Rutas y mensajes
 
@@ -319,10 +322,10 @@ RoomView y SessionView, sin que el controlador dependa de una clase del backend.
 | ChessController | Coordina las acciones del usuario y mantiene el listado, la sala abierta, las sesiones locales y la selección del histórico. |
 | ChessController.View | Instantánea inmutable con la sala pública, el color local, el indicador de directo, el índice y el FEN visible. |
 
-ChessController recibe el puerto por constructor. En las pruebas se compone con FakeService; el adaptador HTTP
-real se añadirá después. La aplicación del frontend no contiene todavía una ventana Swing, un punto de entrada,
-un cliente HTTP ni un temporizador de actualización. El llamador ejecuta las acciones del controlador de forma
-secuencial.
+ChessController recibe el puerto por constructor. En sus pruebas aisladas se compone con FakeService; también puede
+recibir HttpChessService para comunicarse mediante HTTP. La aplicación del frontend no contiene todavía una ventana
+Swing, un punto de entrada ni un temporizador de actualización. El llamador ejecuta las acciones del controlador
+de forma secuencial.
 
 ### Salas, sesiones y órdenes
 
@@ -346,6 +349,52 @@ de mover y abandonar. `live()` vuelve a mostrar la posición más reciente conoc
 conserva la selección histórica mientras su índice siga disponible. Si la consulta falla antes de devolver datos,
 se mantienen la última vista y la sesión local; un llamador puede reintentar la operación.
 
+## Cliente HTTP del frontend
+
+La sesión 09 incorpora HttpChessService y HttpChessServiceTest. HttpChessService es un adaptador de salida que
+implementa `frontend.ports.ChessService` mediante HttpClient del JDK. El controlador conserva su dependencia del
+puerto: el servicio doble de las pruebas puede sustituirse por este adaptador sin cambiar ChessController.
+
+| Operación del puerto | Petición enviada |
+|---|---|
+| rooms | GET /rooms. |
+| room | GET /rooms/{id}. |
+| create | POST /rooms con player. |
+| join | POST /rooms/{id}/join con player. |
+| move | POST /rooms/{id}/moves con from, to, promotion y version. |
+| resign | POST /rooms/{id}/resign con version. |
+
+El adaptador recibe la URI base al construirlo y codifica los identificadores de sala para incorporarlos a la ruta.
+Se admiten direcciones HTTP o HTTPS con servidor y sin credenciales incrustadas, parámetros de consulta ni fragmento.
+El backend de este proyecto utiliza HTTP; admitir HTTPS en el cliente no añade TLS al servidor.
+
+Las peticiones con cuerpo utilizan WireCodec y Properties en UTF-8, con `Content-Type: text/plain;charset=UTF-8`.
+Las respuestas se leen también como UTF-8 y se convierten a RoomView, SessionView o listados. Las órdenes de mover
+y abandonar llevan la credencial en `X-Player-Token`; la versión se transmite en el cuerpo. Las consultas públicas
+no envían esa credencial.
+
+### Esperas y errores
+
+Con el constructor que recibe sólo la URI, el HttpClient se crea con un tiempo de conexión de cinco segundos.
+Cada petición establece un límite de ocho segundos. El segundo constructor permite proporcionar otro HttpClient;
+su configuración de conexión corresponde al llamador. Las operaciones son síncronas y esperan la respuesta.
+La futura interfaz gráfica deberá invocarlas fuera del hilo que dibuja la ventana.
+
+Una respuesta HTTP fuera del intervalo 200–299 se transforma en ServiceException. Se utiliza el campo error del
+cuerpo Properties cuando puede leerse, y el mensaje incluye el código HTTP. Si el cuerpo de error no se puede
+interpretar, se utiliza un mensaje genérico. Los fallos de entrada/salida, incluidos los tiempos de espera agotados,
+se comunican mediante ServiceException con su causa. Una interrupción restaura el indicador de interrupción del
+hilo y se comunica mediante ServiceException. Las respuestas correctas se decodifican con WireCodec y quedan
+sujetas a sus comprobaciones de formato.
+
+Cada llamada realiza una sola petición; este adaptador no incorpora reintentos automáticos ni un sondeo periódico.
+Un llamador puede volver a consultar el estado tras un fallo de conexión. El controlador conserva su última sala
+y sesión si refresh falla antes de devolver una instantánea nueva. Antes de repetir una orden que pudo llegar al
+backend, se debe consultar la versión actual para evitar asumir que la orden no se aplicó.
+
+Se mantienen JDK 27, el manifiesto de BackendMain y los comandos y scripts de arranque del backend. Esta sesión
+no añade FrontendMain ni una ventana Swing: el adaptador se utiliza desde código y mediante sus pruebas.
+
 ## Hitos del proyecto
 
 El hito `milestone-01-domain-contract` agrupa el modelo, FEN, las reglas de movimiento y el contrato compartido.
@@ -355,11 +404,12 @@ se mantiene como identificador del artefacto durante el desarrollo; la entrega f
 El primer hito se comprobó con 52 pruebas. Los casos de uso del backend, la persistencia y la API HTTP quedan
 fuera de esa etiqueta.
 
-El segundo hito previsto, `milestone-02-backend-and-frontend-core`, reúne el backend ejecutable con HTTP y
-persistencia y los casos de uso del frontend comprobados con un doble. El adaptador HTTP del frontend y Swing
-se incorporarán después. Los cambios se integran primero en develop; al cerrar la sesión se integra develop
-en main, se comprueba con `mvn clean verify` y se etiqueta el commit si pasa la verificación. La rama main del
-repositorio remoto pasa del primer al segundo hito al publicar la integración comprobada.
+El segundo hito, `milestone-02-backend-and-frontend-core`, reúne el backend ejecutable con HTTP y persistencia
+y los casos de uso del frontend comprobados con un doble. Se cerró con 74 pruebas y corresponde al commit
+`ddb144c`, conservado en main. El cliente HTTP del frontend y Swing quedan fuera de esa etiqueta.
+
+develop integra la sesión 09 sobre esa base. La incorporación de HttpChessService no modifica la etiqueta del
+segundo hito; forma parte del trabajo posterior.
 
 ## Compilación y pruebas
 
@@ -377,9 +427,10 @@ Verificaciones locales:
 - Sesión 06, 2 de noviembre de 2026: 62 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 07, 3 de noviembre de 2026: 65 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 08, 5 de noviembre de 2026: 74 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 09, 7 de noviembre de 2026: 79 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
-FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 9.
+FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 9; HttpChessServiceTest, 5.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -416,6 +467,20 @@ histórico, la conservación de estado ante un fallo simulado del servicio, el r
 reutilización de una sesión local y el bloqueo de jugadas en una sala en espera. No realizan peticiones HTTP
 ni abren ventanas.
 
+HttpChessServiceTest contiene cinco casos. Los cuatro primeros utilizan un servidor HTTP real sobre loopback
+con respuestas programadas. Comprueban el nombre con tilde y la SessionView al crear una sala, el token en la
+cabecera y la versión y promoción en el cuerpo del movimiento, la conversión de un error 404 en ServiceException
+y el rechazo de esquemas o credenciales incrustadas en la dirección del servidor. Estos cuatro casos aíslan el
+adaptador cliente; no ejecutan los casos de uso ni el repositorio del backend.
+
+El quinto caso conecta dos ChessController con HttpChessService al backend real compuesto por HttpChessServer,
+ChessService y FileRoomRepository en un directorio temporal. Crea una sala, une al segundo jugador y registra
+un movimiento de blancas y otro de negras. Después de detener el servidor, comprueba que refresh comunica
+ServiceException y conserva la última vista y la sesión local del jugador. La integración utiliza red y disco
+reales dentro de la misma JVM; no abre Swing ni lanza procesos de cliente independientes.
+
+Los tiempos de conexión y petición están configurados en el adaptador, pero estas pruebas no fuerzan su vencimiento.
+
 ## Organización de ramas
 
 - main: hitos estables.
@@ -428,7 +493,8 @@ ni abren ventanas.
 - feature/06-file-persistence: almacenamiento en archivos, recuperación y pruebas del repositorio.
 - feature/07-http-api: API HTTP, arranque del backend y empaquetado ejecutable.
 - feature/08-frontend-use-cases: puerto del frontend, controlador, sesiones locales e histórico.
+- feature/09-http-client: adaptador HTTP del frontend, mensajes y errores de comunicación.
 
 ## Próximas etapas
 
-Adaptador de cliente HTTP del frontend, interfaz gráfica Swing e integración de ambas aplicaciones.
+Interfaz gráfica Swing, FrontendMain e integración de ambas aplicaciones.
