@@ -39,6 +39,9 @@ compone el cliente de escritorio con ChessPanel y BoardPanel para jugar, observa
 
 FenPositionDeserializer compone los deserializadores de tablero y estado mediante interfaces.
 
+EndToEndTest incorpora un recorrido automatizado de salas, movimientos, histórico y recuperación con servidor
+HTTP local y archivos reales. Las vistas Swing de esos estados se renderizan sin abrir ventanas interactivas.
+
 ## Serialización FEN
 
 Se han incorporado estos adaptadores:
@@ -273,9 +276,8 @@ Properties y contienen una clave `error` con un mensaje.
 
 ### Compilar y ejecutar
 
-El proyecto mantiene JDK 27 y `maven.compiler.release=27`. En el POM se añade al plugin de JAR el manifiesto con
-`software.ulpgc.chess.backend.BackendMain` como Main-Class, conservando las versiones y la configuración del
-proyecto. El POM antiguo del kit con release 17 no corresponde a esta configuración.
+El proyecto utiliza JDK 27 y `maven.compiler.release=27`. El plugin de JAR configura el manifiesto con
+`software.ulpgc.chess.backend.BackendMain` como Main-Class.
 
 Desde la raíz del proyecto, primero se compila y después se ejecuta el JAR:
 
@@ -484,8 +486,9 @@ en IntelliJ, como se indica en las instrucciones del backend.
 5. Para observar, selecciona o pega el código y pulsa Observar sin ocupar una plaza.
 6. Recorre las posiciones del histórico y utiliza En directo para regresar a la posición actual.
 
-Estos pasos describen el uso previsto; no constituyen un registro de una prueba manual ya realizada ni de capturas
-guardadas. Las credenciales se conservan sólo en la memoria del controlador. Si se cierra el cliente, una nueva
+Estos pasos describen el uso previsto y no acreditan por sí solos una prueba manual ya realizada. Las vistas
+automatizadas se explican en la sección de integración y evidencias. Las credenciales se conservan sólo en la
+memoria del controlador. Si se cierra el cliente, una nueva
 instancia no recupera automáticamente su plaza: puede observar la partida, pero no dispone del token anterior.
 Reiniciar únicamente el backend con el mismo directorio conserva sus hashes y permite continuar a los clientes que
 siguen abiertos con su sesión local.
@@ -494,6 +497,75 @@ La interfaz desactiva las órdenes para espectadores, salas no activas y reprodu
 permitir intentar un movimiento durante el turno del rival; el backend lo rechaza sin aplicar la jugada. La mejora
 del bloqueo visual por turno queda pendiente para la sesión 13. Se mantienen las limitaciones del ajedrez declarado:
 sin enroque, captura al paso ni adjudicación automática por mate, ahogado o tablas.
+
+## Integración y evidencias automatizadas
+
+La sesión 11 incorpora EndToEndTest, el flujo de GitHub Actions y tres vistas renderizadas de los componentes
+Swing. EndToEndTest utiliza el backend y el repositorio de archivos reales, comunicación HTTP sobre loopback y
+los mismos controladores y paneles que emplea la aplicación de escritorio.
+
+### Recorrido de integración
+
+El recorrido inicial compone tres ChessController con HttpChessService dentro del mismo proceso: Ana con blancas,
+Luis con negras y un espectador. El servidor escucha en un puerto local disponible y FileRoomRepository utiliza
+un directorio temporal de JUnit, separado del directorio de partidas utilizado al arrancar la aplicación.
+Los adaptadores reciben un HttpClient compartido que se cierra al terminar el caso. Cada controlador conserva
+su sesión; compartir el transporte no mezcla los tokens de los jugadores.
+
+La prueba crea una sala, incorpora al segundo jugador y rechaza e2–e5. Una consulta posterior comprueba que la
+versión no cambió y que no se añadió ningún movimiento. Después registra
+cuatro movimientos válidos: e2–e4, e7–e5, g1–f3 y b8–c6. El espectador consulta la sala, selecciona la posición tras
+el segundo movimiento, no puede enviar una jugada y vuelve a la posición final con live().
+
+A continuación se cierra el servidor y se construyen otras instancias de HttpChessServer, ChessService y
+FileRoomRepository sobre el mismo directorio temporal. Un nuevo controlador observador consulta la partida,
+comprueba el FEN final y los cuatro movimientos y selecciona la posición inicial del histórico. Al cerrar ese
+servidor, refresh comunica ServiceException y conserva la vista ya cargada.
+
+Las llamadas del recorrido pasan por HTTP y disco reales, pero se ejecutan en una misma JVM. La recuperación
+consiste en volver a cargar la partida; esta prueba no restaura una sesión de jugador ni recupera tokens después
+de cerrar un cliente. Las acciones se solicitan a los controladores y no mediante clics en ventanas de escritorio.
+El recorrido manual con clientes independientes queda para la sesión 12.
+
+### Vistas de la aplicación
+
+Estas imágenes se obtienen renderizando ChessPanel y BoardPanel en modo headless. Los datos de las salas y las
+posiciones proceden del recorrido HTTP local real descrito arriba. El panel se dibuja en una BufferedImage y se
+exporta a PNG sin abrir una ventana interactiva; no son capturas de una prueba manual de botones o diálogos.
+
+Sala creada por Ana y pendiente de un segundo jugador. Renderizado Swing headless con datos del backend HTTP local:
+
+![Sala creada y código disponible](docs/images/01-sala.png)
+
+Partida tras e2–e4, e7–e5, g1–f3 y b8–c6. Renderizado Swing headless con cuatro movimientos guardados mediante HTTP:
+
+![Tablero después de cuatro movimientos](docs/images/02-tablero.png)
+
+Espectador en la posición tras el segundo movimiento, con cuatro movimientos conservados en el histórico.
+Renderizado Swing headless a partir de la sala consultada por HTTP local:
+
+![Reproducción de la segunda posición del histórico](docs/images/03-historico.png)
+
+Las imágenes se exportan sólo cuando se define la propiedad chess.evidence. Para regenerarlas desde la raíz del
+proyecto:
+
+```text
+mvn test "-Dchess.evidence=target/evidence" "-Djava.awt.headless=true"
+```
+
+Los tres archivos se generan en target/evidence. Después de comprobar su contenido y legibilidad, se incorporan
+a docs/images con sus mismos nombres. El comando habitual mvn clean verify comprueba el caso de integración,
+pero no exporta imágenes si no se proporciona esa propiedad.
+
+### Verificación en GitHub Actions
+
+El workflow de `.github/workflows/verify.yml` está configurado en inglés para comprobar el proyecto con JDK 27
+al recibir un push o una pull request. Compila y ejecuta las pruebas sobre el contenido publicado. Una ejecución
+local correcta no acredita por sí sola el resultado del workflow remoto.
+
+Después del push, debe abrirse Actions en GitHub y localizar la ejecución correspondiente al commit publicado.
+Hay que comprobar su resultado y sus registros antes de afirmar que la verificación remota ha pasado. Esta
+documentación no da por verificada una ejecución remota que todavía no se haya consultado.
 
 ## Hitos del proyecto
 
@@ -508,8 +580,9 @@ El segundo hito, `milestone-02-backend-and-frontend-core`, reúne el backend eje
 y los casos de uso del frontend comprobados con un doble. Se cerró con 74 pruebas y corresponde al commit
 `ddb144c`, conservado en main. El cliente HTTP del frontend y Swing quedan fuera de esa etiqueta.
 
-develop integra las sesiones 09 y 10 sobre esa base. El cliente HTTP y la interfaz Swing no modifican la etiqueta
-del segundo hito; forman parte del trabajo posterior.
+develop integra las sesiones 09, 10 y 11 sobre esa base. El cliente HTTP, la interfaz Swing y la nueva prueba
+de integración no modifican la etiqueta del segundo hito. main conserva ese hito; el próximo cierre en main
+se prevé después del recorrido manual de la sesión 12.
 
 ## Compilación y pruebas
 
@@ -529,10 +602,11 @@ Verificaciones locales:
 - Sesión 08, 5 de noviembre de 2026: 74 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 09, 7 de noviembre de 2026: 79 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 10, 10 de noviembre de 2026: 82 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 11, 12 de noviembre de 2026: 83 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
 FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 9; HttpChessServiceTest, 5;
-SwingPresentationTest, 3.
+SwingPresentationTest, 3; EndToEndTest, 1.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -592,6 +666,11 @@ que la llamada se ejecuta fuera del hilo de eventos, que éste sigue respondiend
 que Actualizar salas permanece deshabilitado hasta que termina el worker.
 No se afirma una prueba automática de los diálogos modales de promoción o abandono.
 
+El caso de EndToEndTest comprueba el recorrido integrado de sala, cuatro movimientos, espectador, posiciones
+históricas, recuperación del repositorio y desconexión descrito en su sección. Además puede exportar las tres
+vistas Swing si se proporciona chess.evidence. No automatiza clics de una sesión de escritorio ni la recuperación
+de credenciales de jugador tras cerrar el cliente.
+
 ## Organización de ramas
 
 - main: hitos estables.
@@ -606,8 +685,9 @@ No se afirma una prueba automática de los diálogos modales de promoción o aba
 - feature/08-frontend-use-cases: puerto del frontend, controlador, sesiones locales e histórico.
 - feature/09-http-client: adaptador HTTP del frontend, mensajes y errores de comunicación.
 - feature/10-swing-ui: presentación Swing, arranque del cliente y trabajo en segundo plano.
+- feature/11-integration-evidence: prueba integrada, vistas renderizadas y verificación en GitHub Actions.
 
 ## Próximas etapas
 
-Verificación de extremo a extremo, recorrido manual y evidencias de interfaz; mejoras de interacción y adaptación
-a las próximas clases.
+Sesión 12: recorrido manual con dos clientes y un observador, revisión de resultados e incidencias y cierre del
+próximo hito si está comprobado. Después continuarán las mejoras de interacción y la adaptación a las próximas clases.
