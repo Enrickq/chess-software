@@ -1,0 +1,22 @@
+name: Verify project
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Java 27 build and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Java 27
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '27'
+          cache: maven
+      - name: Compile, test and package
+        run: mvn --batch-mode --no-transfer-progress -Djava.awt.headless=true clean verify

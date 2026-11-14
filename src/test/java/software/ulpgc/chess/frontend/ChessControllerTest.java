@@ -9,6 +9,9 @@ import software.ulpgc.chess.frontend.ports.ChessService;
 import software.ulpgc.chess.frontend.ports.ServiceException;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -17,7 +20,7 @@ class ChessControllerTest {
     private final ChessController controller = new ChessController(service);
 
     @Test void serviceCanBeReplacedByDoubleWithoutChangingUseCases() {
-        controller.create("  Ana  ");
+        await(controller.create("  Ana  "));
         assertEquals("Ana", service.player);
         assertEquals("White", controller.view().color());
         assertTrue(controller.view().participant());
@@ -25,10 +28,10 @@ class ChessControllerTest {
     }
 
     @Test void moveUsesPrivateCredentialAndLatestObservedVersion() {
-        controller.create("Ana");
+        await(controller.create("Ana"));
         service.current = room("ACTIVE", 8, List.of());
-        controller.refresh();
-        controller.move("e2", "e4", "");
+        await(controller.refresh());
+        await(controller.move("e2", "e4", ""));
         assertEquals("private-token", service.token);
         assertEquals(8, service.version);
         assertEquals("e2e4", service.move);
@@ -37,7 +40,7 @@ class ChessControllerTest {
     }
 
     @Test void spectatorCannotSubmitMoveOrResign() {
-        controller.watch("room-one");
+        await(controller.watch("room-one"));
         assertFalse(controller.view().participant());
         assertThrows(IllegalStateException.class, () -> controller.move("e2", "e4", ""));
         assertThrows(IllegalStateException.class, controller::resign);
@@ -45,14 +48,14 @@ class ChessControllerTest {
     }
 
     @Test void replayRemainsAtChosenPositionWhenRemoteGameAdvances() {
-        controller.create("Ana");
+        await(controller.create("Ana"));
         MoveView first = new MoveView(1, "e2", "e4", "", "Ana", "after-first", "2026-10-17T10:00:00Z");
         MoveView second = new MoveView(2, "e7", "e5", "", "Luis", "after-second", "2026-10-17T10:00:01Z");
         service.current = room("ACTIVE", 2, List.of(first));
-        controller.refresh();
+        await(controller.refresh());
         controller.replayAt(1);
         service.current = room("ACTIVE", 3, List.of(first, second));
-        controller.refresh();
+        await(controller.refresh());
         assertEquals("after-first", controller.view().fen());
         assertFalse(controller.view().live());
         assertThrows(IllegalStateException.class, () -> controller.move("g1", "f3", ""));
@@ -62,7 +65,7 @@ class ChessControllerTest {
     }
 
     @Test void initialReplayAndBoundsAreExplicit() {
-        controller.watch("room-one");
+        await(controller.watch("room-one"));
         controller.replayAt(0);
         assertEquals(ChessController.INITIAL_FEN, controller.view().fen());
         assertThrows(IllegalArgumentException.class, () -> controller.replayAt(-1));
@@ -70,16 +73,17 @@ class ChessControllerTest {
     }
 
     @Test void connectionFailureDoesNotDestroyRoomOrPlayerSession() {
-        controller.create("Ana");
+        await(controller.create("Ana"));
         RoomView before = controller.view().room();
         service.disconnected = true;
-        assertThrows(ServiceException.class, controller::refresh);
+        CompletionException error = assertThrows(CompletionException.class, () -> await(controller.refresh()));
+        assertInstanceOf(ServiceException.class, error.getCause());
         assertSame(before, controller.view().room());
         assertTrue(controller.view().participant());
         service.disconnected = false;
         service.current = room("ACTIVE", 3, List.of());
-        controller.refresh();
-        controller.move("e2", "e4", "");
+        await(controller.refresh());
+        await(controller.move("e2", "e4", ""));
         assertEquals("private-token", service.token);
     }
 
@@ -92,17 +96,37 @@ class ChessControllerTest {
     }
 
     @Test void reopeningOwnedRoomRestoresPlayerRoleWithoutTakingOtherSeat() {
-        controller.create("Ana");
-        controller.watch("room-one");
-        controller.join("room-one", "Ana");
+        await(controller.create("Ana"));
+        await(controller.watch("room-one"));
+        await(controller.join("room-one", "Ana"));
         assertEquals("White", controller.view().color());
         assertEquals(0, service.joins);
     }
 
     @Test void waitingRoomCannotBePlayed() {
-        controller.create("Ana");
+        await(controller.create("Ana"));
         assertFalse(controller.view().canPlay());
         assertThrows(IllegalStateException.class, () -> controller.move("e2", "e4", ""));
+    }
+
+    @Test void remoteStateIsPublishedOnlyAfterPendingResponseCompletes() {
+        await(controller.create("Ana"));
+        RoomView before = controller.view().room();
+        service.pendingRoom = new CompletableFuture<RoomView>().orTimeout(5, TimeUnit.SECONDS);
+        CompletableFuture<Void> pendingRefresh = controller.refresh();
+        assertFalse(pendingRefresh.isDone());
+        assertSame(before, controller.view().room());
+        assertFalse(controller.view().canPlay());
+
+        RoomView updated = room("ACTIVE", 2, List.of());
+        service.pendingRoom.complete(updated);
+        await(pendingRefresh);
+        assertSame(updated, controller.view().room());
+        assertTrue(controller.view().canPlay());
+    }
+
+    private void await(CompletableFuture<Void> operation) {
+        operation.orTimeout(5, TimeUnit.SECONDS).join();
     }
 
     private static RoomView room(String status, long version, List<MoveView> moves) {
@@ -117,31 +141,32 @@ class ChessControllerTest {
         private String move;
         private long version;
         private boolean disconnected;
+        private CompletableFuture<RoomView> pendingRoom;
         private int joins;
-        @Override public List<RoomView> rooms() { return List.of(current); }
-        @Override public RoomView room(String id) {
-            if (disconnected) throw new ServiceException("Desconectado");
-            return current;
+        @Override public CompletableFuture<List<RoomView>> rooms() { return CompletableFuture.completedFuture(List.of(current)); }
+        @Override public CompletableFuture<RoomView> room(String id) {
+            if (disconnected) return CompletableFuture.failedFuture(new ServiceException("Desconectado"));
+            return pendingRoom == null ? CompletableFuture.completedFuture(current) : pendingRoom;
         }
-        @Override public SessionView create(String player) {
+        @Override public CompletableFuture<SessionView> create(String player) {
             this.player = player;
-            return new SessionView(current, "private-token", "White");
+            return CompletableFuture.completedFuture(new SessionView(current, "private-token", "White"));
         }
-        @Override public SessionView join(String id, String player) {
+        @Override public CompletableFuture<SessionView> join(String id, String player) {
             joins++;
             this.player = player;
-            return new SessionView(current, "other-token", "Black");
+            return CompletableFuture.completedFuture(new SessionView(current, "other-token", "Black"));
         }
-        @Override public RoomView move(String id, String token, String from, String to, String promotion, long version) {
+        @Override public CompletableFuture<RoomView> move(String id, String token, String from, String to, String promotion, long version) {
             this.token = token;
             this.version = version;
             this.move = from + to;
             current = ChessControllerTest.room("ACTIVE", version + 1, List.of());
-            return current;
+            return CompletableFuture.completedFuture(current);
         }
-        @Override public RoomView resign(String id, String token, long version) {
+        @Override public CompletableFuture<RoomView> resign(String id, String token, long version) {
             this.token = token;
-            return ChessControllerTest.room("BLACK_WON", version + 1, List.of());
+            return CompletableFuture.completedFuture(ChessControllerTest.room("BLACK_WON", version + 1, List.of()));
         }
     }
 }

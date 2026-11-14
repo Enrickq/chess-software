@@ -15,6 +15,8 @@ para crear salas, unir jugadores, consultar partidas, mover y abandonar. FileRoo
 de salas y movimientos en archivos y su recuperación al construir un nuevo servicio. HttpChessServer expone los
 casos de uso mediante HTTP y BackendMain permite arrancar el backend de forma independiente. El frontend incorpora
 su controlador de aplicación para gestionar salas, sesiones locales y la reproducción del histórico.
+HttpChessService implementa su puerto de salida y permite comunicarse con el backend mediante HTTP. FrontendMain
+compone el cliente de escritorio con ChessPanel y BoardPanel para jugar, observar y recorrer el histórico.
 
 - Board, Square, Piece, Color, File y Rank representan el tablero.
 - Position combina un tablero con su estado.
@@ -30,8 +32,17 @@ su controlador de aplicación para gestionar salas, sesiones locales y la reprod
 - HttpChessServer transforma peticiones HTTP en llamadas al puerto ChessUseCases.
 - BackendMain configura y conecta el repositorio, el servicio y el servidor.
 - ChessController coordina las acciones del frontend mediante su propio puerto ChessService.
+- HttpChessService implementa ese puerto mediante HttpClient y el contrato Properties UTF-8.
+- BoardPanel dibuja el tablero y comunica las casillas seleccionadas.
+- ChessPanel presenta las acciones y consume futuros mediante whenCompleteAsync en el hilo de Swing.
+- FrontendMain compone y abre la aplicación Swing.
 
 FenPositionDeserializer compone los deserializadores de tablero y estado mediante interfaces.
+
+EndToEndTest incorpora un recorrido automatizado de salas, movimientos, histórico y recuperación con servidor
+HTTP local y archivos reales. Las vistas Swing de esos estados se renderizan sin abrir ventanas interactivas.
+La sesión 12 mantiene la asincronía HTTP mediante CompletableFuture hasta la publicación del estado y su consumo
+en la interfaz; el recorrido manual y sus resultados se documentan por separado.
 
 ## Serialización FEN
 
@@ -103,15 +114,15 @@ que el texto generado sea idéntico.
 
 El formato Properties es una decisión de este proyecto. Se conserva FEN para representar las posiciones.
 Los casos de uso del backend, el adaptador de archivos, el servidor HTTP y el controlador del frontend utilizan
-este contrato. Las operaciones HTTP pueden comprobarse sin una interfaz gráfica; el frontend todavía no se
-conecta al servidor mediante un cliente HTTP propio.
+este contrato. HttpChessService permite conectar el controlador del frontend con el servidor mediante HTTP.
+Las operaciones pueden comprobarse sin una interfaz gráfica.
 
 ## Casos de uso del backend
 
 El paquete `backend` incorpora la coordinación de salas y partidas. El servicio depende de interfaces para
 consultar y guardar las salas y para convertir las posiciones FEN; las reglas del ajedrez siguen en MoveRules.
 FileRoomRepository incorpora el almacenamiento en disco y HttpChessServer el acceso mediante HTTP.
-El cliente de comunicación del frontend se incorporará en una etapa posterior.
+HttpChessService implementa el cliente de comunicación del frontend mediante su puerto de servicio.
 
 ### Responsabilidades y composición
 
@@ -133,7 +144,8 @@ archivos, peticiones HTTP ni componentes gráficos.
 MemoryRepository es únicamente un doble definido dentro de ChessServiceTest. Conserva datos en memoria y permite
 simular un fallo al guardar. Sirve para probar el servicio sin disco ni red; no constituye almacenamiento persistente
 ni un adaptador de producción. FileRoomRepository aporta ahora la implementación de almacenamiento en disco.
-BackendMain y HttpChessServer permiten ejecutar y consultar el backend; la interfaz gráfica sigue pendiente.
+BackendMain y HttpChessServer permiten ejecutar y consultar el backend. FrontendMain compone la interfaz gráfica
+con el controlador y el adaptador HTTP.
 
 ### Salas, autorización y versiones
 
@@ -211,8 +223,8 @@ los métodos pertenece a cada instancia; no hay un bloqueo compartido entre inst
 utilizar el mismo directorio simultáneamente. Las salas se recuperan al crear el servicio; los cambios externos
 en los archivos no se recargan automáticamente mientras está funcionando.
 
-La persistencia se integra con BackendMain y HttpChessServer. El adaptador HTTP del frontend y su interfaz gráfica
-siguen pendientes.
+La persistencia se integra con BackendMain y HttpChessServer. El cliente Swing accede mediante HttpChessService;
+no consulta ni escribe directamente los archivos de partidas.
 
 ## API HTTP y arranque del backend
 
@@ -222,7 +234,7 @@ HTTP en operaciones del puerto ChessUseCases y convierte sus resultados y errore
 los turnos y los cambios de partida permanecen en ChessService.
 
 BackendMain compone FileRoomRepository, el servicio obtenido mediante BackendFactory y HttpChessServer. El backend
-puede ejecutarse como proceso independiente; la interfaz de usuario y el cliente HTTP del frontend siguen pendientes.
+puede ejecutarse como proceso independiente y recibir peticiones de HttpChessService desde el cliente Swing.
 
 ### Rutas y mensajes
 
@@ -266,9 +278,8 @@ Properties y contienen una clave `error` con un mensaje.
 
 ### Compilar y ejecutar
 
-El proyecto mantiene JDK 27 y `maven.compiler.release=27`. En el POM se añade al plugin de JAR el manifiesto con
-`software.ulpgc.chess.backend.BackendMain` como Main-Class, conservando las versiones y la configuración del
-proyecto. El POM antiguo del kit con release 17 no corresponde a esta configuración.
+El proyecto utiliza JDK 27 y `maven.compiler.release=27`. El plugin de JAR configura el manifiesto con
+`software.ulpgc.chess.backend.BackendMain` como Main-Class.
 
 Desde la raíz del proyecto, primero se compila y después se ejecuta el JAR:
 
@@ -307,44 +318,321 @@ usar directamente el comando del JAR; no es necesario cambiar la política de ej
 
 ## Casos de uso del frontend
 
-La sesión 08 incorpora el puerto `frontend.ports.ChessService`, ServiceException, ChessController y
-ChessControllerTest. La interfaz del frontend expresa las operaciones que necesita el controlador; es distinta
-de la clase de aplicación `backend.application.ChessService`. Ambas partes reutilizan los datos de intercambio
-RoomView y SessionView, sin que el controlador dependa de una clase del backend.
+La sesión 08 incorporó el puerto `frontend.ports.ChessService`, ServiceException, ChessController y
+ChessControllerTest. La sesión 12 adapta sus operaciones remotas a CompletableFuture para conservar la asincronía
+desde el cliente HTTP hasta el consumo del resultado. El controlador no depende de una clase del backend.
 
 | Tipo | Responsabilidad |
 |---|---|
-| frontend.ports.ChessService | Puerto de salida para listar salas, consultar una sala, crearla, unirse, mover y abandonar. |
-| ServiceException | Comunica un fallo del servicio a través del puerto sin exigir tipos de HTTP. |
-| ChessController | Coordina las acciones del usuario y mantiene el listado, la sala abierta, las sesiones locales y la selección del histórico. |
-| ChessController.View | Instantánea inmutable con la sala pública, el color local, el indicador de directo, el índice y el FEN visible. |
+| frontend.ports.ChessService | Puerto de salida: devuelve CompletableFuture de listados, RoomView o SessionView para las operaciones remotas. |
+| ServiceException | Comunica fallos del servicio sin exponer tipos HTTP en el puerto. |
+| ChessController | Coordina las acciones y actualiza listado, sala y sesiones mediante continuaciones thenAccept. |
+| ChessController.View | Instantánea inmutable con sala pública, color local, indicador de directo, índice y FEN visible. |
 
-ChessController recibe el puerto por constructor. En las pruebas se compone con FakeService; el adaptador HTTP
-real se añadirá después. La aplicación del frontend no contiene todavía una ventana Swing, un punto de entrada,
-un cliente HTTP ni un temporizador de actualización. El llamador ejecuta las acciones del controlador de forma
-secuencial.
+El puerto conserva las operaciones rooms, room, create, join, move y resign. Los métodos del controlador que
+consultan ese servicio devuelven CompletableFuture<Void>; ese futuro sólo termina correctamente después de
+actualizar el estado correspondiente. Las operaciones locales rooms(), view(), replayAt() y live() no solicitan
+la red y mantienen su resultado inmediato.
+
+ChessController recibe el puerto por constructor. En las pruebas aisladas se compone con un doble de servicio;
+FrontendMain lo compone con HttpChessService y lo entrega a ChessPanel. El llamador serializa las operaciones y
+consume el estado cuando finaliza el futuro devuelto. El controlador no aporta una cola ni coordinación para
+llamadores arbitrarios que modifiquen su estado simultáneamente; ChessPanel cumple ese contrato mediante busy.
 
 ### Salas, sesiones y órdenes
 
-Crear o unirse guarda la SessionView en memoria, asociada a su sala. La consulta de una sala no ocupa una plaza:
-si el controlador ya conserva una sesión para ella, puede mostrar el color del jugador; si no, actúa como espectador.
-Volver a abrir una sala propia reutiliza su sesión local, sin volver a solicitar el puesto de negras. Las sesiones
-se conservan mientras existe ese controlador y no se escriben en disco.
+Crear o unirse guarda la SessionView en memoria cuando llega correctamente la respuesta. La consulta de una sala
+no ocupa una plaza: si el controlador conserva una sesión para ella muestra el color del jugador; si no, actúa como
+espectador. Volver a abrir una sala propia reutiliza su sesión local, sin volver a solicitar el puesto de negras.
+Las sesiones se conservan mientras existe el controlador y no se escriben en disco.
 
 Mover y abandonar requieren una sala activa, una sesión de jugador y la vista en directo. El controlador envía
-el token correspondiente y la última versión conocida a través del puerto; la autorización final y las reglas
-siguen en el backend. El token se utiliza para esas órdenes y no forma parte de ChessController.View.
+el token y la última versión conocida mediante el puerto; la autorización final y las reglas permanecen en el
+backend. El token no forma parte de ChessController.View. Un argumento local inválido puede provocar una excepción
+antes de devolver un futuro; un fallo remoto se comunica mediante un futuro completado excepcionalmente.
 
 ### Estado actual e histórico
 
-Sin sala abierta, la vista muestra el FEN inicial. Dentro de una sala, la vista en directo muestra la última posición
-recibida. `replayAt(0)` selecciona la posición inicial; `replayAt(n)` selecciona la posición registrada tras el
-movimiento n, dentro del intervalo disponible. La reproducción sólo cambia la vista local y bloquea las órdenes
-de mover y abandonar. `live()` vuelve a mostrar la posición más reciente conocida.
+Sin sala abierta, la vista muestra el FEN inicial. En directo muestra la última posición recibida de la sala.
+replayAt(0) selecciona la posición inicial y replayAt(n) la registrada tras el movimiento n, dentro del intervalo
+disponible. La reproducción sólo cambia la vista local y bloquea las órdenes de mover y abandonar. live() vuelve
+a la posición más reciente conocida.
 
-`refresh()` consulta la sala abierta o actualiza el listado si aún no hay sala. Una actualización de la partida
-conserva la selección histórica mientras su índice siga disponible. Si la consulta falla antes de devolver datos,
-se mantienen la última vista y la sesión local; un llamador puede reintentar la operación.
+refresh() consulta la sala abierta o actualiza el listado si aún no hay sala. La selección histórica se conserva
+mientras su índice siga disponible. Hasta completar correctamente la respuesta se mantiene el estado anterior;
+thenAccept publica la nueva instantánea antes de que finalice el futuro del controlador. Si la operación falla,
+se mantienen la última vista y la sesión local y el llamador puede volver a consultar.
+
+## Cliente HTTP asíncrono del frontend
+
+HttpChessService es un adaptador de salida que implementa `frontend.ports.ChessService` mediante HttpClient del
+JDK. La sesión 09 incorporó este adaptador y la sesión 12 sustituye su envío síncrono por sendAsync, conservando
+el contrato de mensajes y las operaciones del sistema.
+
+| Operación del puerto | Petición enviada |
+|---|---|
+| rooms | GET /rooms. |
+| room | GET /rooms/{id}. |
+| create | POST /rooms con player. |
+| join | POST /rooms/{id}/join con player. |
+| move | POST /rooms/{id}/moves con from, to, promotion y version. |
+| resign | POST /rooms/{id}/resign con version. |
+
+El adaptador recibe la URI base y codifica los identificadores de sala para incorporarlos a la ruta. Se admiten
+HTTP o HTTPS con servidor y sin credenciales incrustadas, parámetros de consulta ni fragmento. El backend del
+proyecto utiliza HTTP; la configuración del cliente no añade TLS al servidor.
+
+Los cuerpos se convierten con WireCodec a Properties UTF-8 y utilizan Content-Type text/plain;charset=UTF-8.
+Las respuestas se leen como UTF-8. La credencial de mover y abandonar se envía en X-Player-Token y la versión en
+el cuerpo; las consultas públicas no envían esa credencial.
+
+### Futuros, transformación y consumo
+
+sendAsync devuelve un CompletableFuture de la respuesta HTTP sin esperar a recibir el cuerpo en el hilo del
+llamador. El adaptador comprueba la respuesta y aplica thenApply para convertir el cuerpo mediante WireCodec.
+El puerto devuelve el futuro del dato que necesita la aplicación, sin exponer HttpResponse al controlador.
+
+ChessController aplica thenAccept para publicar la sala, el listado o la sesión obtenidos. ChessPanel consume
+la finalización de ese futuro mediante whenCompleteAsync y SwingUtilities::invokeLater. Así se conserva la cadena
+asíncrona hasta el hilo de eventos de Swing, después de actualizar el estado de aplicación.
+
+La producción del frontend no convierte ese flujo en una llamada síncrona con Future.get() o join(), ni coloca
+un envío bloqueante dentro de otro ejecutor. Las esperas acotadas de los futuros se reservan a las pruebas JUnit;
+por ejemplo, EndToEndTest espera hasta diez segundos desde su hilo de prueba antes de comprobar cada resultado.
+
+### Esperas y errores
+
+El constructor que recibe sólo la URI crea un HttpClient con cinco segundos de tiempo de conexión. Cada petición
+establece un límite de ocho segundos. El segundo constructor admite un HttpClient proporcionado por el llamador,
+que determina su configuración de conexión. Estos límites no requieren bloquear el hilo gráfico.
+
+Una respuesta HTTP fuera del intervalo 200–299 produce ServiceException dentro del futuro, con el campo error
+del cuerpo Properties cuando puede leerse y el código HTTP en el mensaje. Un cuerpo de error no interpretable
+utiliza un mensaje genérico. Los fallos de transporte se normalizan como ServiceException con su causa. Los datos
+de una respuesta correcta se decodifican mediante WireCodec; sus errores de formato también completan el futuro
+excepcionalmente.
+
+La construcción de una dirección o petición y la validación de argumentos locales pueden fallar de forma síncrona.
+El panel atiende ambos caminos: la excepción inmediata al iniciar una acción y la finalización excepcional de un
+futuro. Al presentar un error desenvuelve CompletionException para mostrar la causa útil al usuario.
+
+Cada llamada realiza una sola petición; el adaptador no incorpora reintentos automáticos ni sondeo periódico.
+ChessPanel programa consultas posteriores mediante su Timer. Antes de repetir una orden cuyo resultado sea incierto,
+se debe consultar el estado y su versión, porque el backend puede haberla aplicado aunque no llegase la respuesta.
+
+Se mantienen JDK 27, el manifiesto de BackendMain y los comandos y scripts de arranque de ambas aplicaciones.
+No cambia el formato de los mensajes ni el adaptador de persistencia.
+
+### Material de semana 10 aplicado
+
+El material recibido de la semana 10, miércoles de teoría, propone HttpClient.sendAsync y muestra la transformación
+con thenApply y el consumo con thenAccept. Esta sesión aplica esa secuencia al cliente y a los casos de uso del
+frontend, conservando sus interfaces y la separación de responsabilidades.
+
+En la versión de la sesión 10, SwingWorker mantenía receptiva la ventana mientras se utilizaba un envío HTTP
+síncrono. La adaptación actual conserva el futuro a lo largo del puerto, el controlador y la presentación.
+Encadenar consultas con thenCompose, normalizar errores y devolver el consumo de la vista al hilo de Swing son
+soluciones de integración de este proyecto; esos elementos no se atribuyen al ZIP docente, donde no aparecen.
+
+## Interfaz gráfica Swing
+
+La sesión 10 incorpora BoardPanel, ChessPanel y FrontendMain, junto con SwingPresentationTest y el script opcional
+scripts/frontend.ps1. El frontend se compone con ChessController y HttpChessService y se comunica con el mismo
+backend HTTP que utilizan las pruebas anteriores. El dominio, los casos de uso del backend y la persistencia
+mantienen sus responsabilidades.
+
+| Tipo | Responsabilidad |
+|---|---|
+| BoardPanel | Dibuja el tablero recibido como FEN, las piezas, las coordenadas, la selección y el último movimiento; transforma clics en casillas. |
+| ChessPanel | Presenta salas, jugadores, mensajes e histórico; conecta las acciones con ChessController y consume sus futuros en el hilo de Swing. |
+| FrontendMain | Lee --server, compone controlador y adaptador HTTP, crea la ventana e inicia la actualización periódica. |
+
+BoardPanel permite mostrar el tablero desde blancas o negras. ChessPanel elige la orientación de negras para el
+jugador de ese color; un espectador utiliza la orientación de blancas. Las reglas se siguen validando en el backend.
+La interfaz permite crear una sala, unirse por código o selección, copiar el código, observar una partida, mover
+con clics o con los campos de origen y destino, elegir la promoción y abandonar tras confirmación.
+
+El histórico puede recorrerse mediante su lista, el deslizador y los botones de posición anterior o siguiente.
+En directo devuelve a la última posición conocida y permite volver a jugar. La reproducción es local: no modifica
+el histórico ni detiene la partida de los otros jugadores.
+
+### Asincronía y actualización de la vista
+
+ChessPanel inicia acciones que devuelven CompletableFuture<Void>. busy permanece activo hasta que termina el
+futuro final del controlador y se consume su resultado en el hilo gráfico; no basta con haber iniciado la petición.
+Mientras tanto los controles de las operaciones y del histórico permanecen deshabilitados para evitar lecturas
+o acciones que compitan con la actualización pendiente.
+
+whenCompleteAsync programa la presentación mediante SwingUtilities::invokeLater. El panel lee la nueva View,
+presenta el resultado o la causa del fallo y restablece los controles desde el hilo de eventos de Swing. El estado
+del controlador ya se ha actualizado antes de que esa finalización correcta pueda ser consumida por la interfaz.
+Una excepción inmediata de validación se presenta en ese mismo hilo sin dejar busy activado.
+
+Al abrir la ventana se encadenan el listado y la consulta de estado con thenCompose. Actualizar salas utiliza
+el mismo encadenamiento. Un Timer intenta ejecutar refresh cada dos segundos; si hay una operación en curso o
+un diálogo de promoción o abandono abierto, no inicia otra consulta. Con una sala abierta consulta esa sala;
+el catálogo de otras salas se consulta con Actualizar salas. Sin sala abierta, refresh actualiza el listado.
+
+Al cerrar la ventana se detiene el Timer. Esto no cancela necesariamente una petición HTTP ya iniciada: el futuro
+puede completarse posteriormente. Las órdenes de mover o abandonar no se reenvían automáticamente; las consultas
+periódicas permiten recuperar el estado cuando el servidor vuelve a estar disponible mientras la ventana siga abierta.
+
+### Ejecutar las dos aplicaciones
+
+Se necesita JDK 27, Maven y un entorno de escritorio para abrir el frontend. El backend conserva su manifiesto
+BackendMain: `java -jar` sigue arrancando el servidor. El frontend utiliza su clase de entrada mediante `java -cp`.
+El POM, el nivel de compilación 27 y el script de arranque del backend se mantienen.
+
+Desde la raíz del proyecto, primero compila:
+
+```text
+mvn clean verify
+```
+
+En una terminal, inicia el backend y déjalo atendiendo peticiones:
+
+```text
+java -jar target/chess-software-1.0.0.jar --host 127.0.0.1 --port 8080 --data data
+```
+
+En otra terminal, abre un cliente:
+
+```text
+java -cp target/chess-software-1.0.0.jar software.ulpgc.chess.frontend.FrontendMain --server http://127.0.0.1:8080
+```
+
+Repite el comando del frontend en otra terminal para abrir el segundo jugador. Otro cliente puede utilizarse como
+espectador. Todos deben apuntar al mismo servidor. `--server` tiene como valor predeterminado
+`http://127.0.0.1:8080`; `--help` muestra el uso. FrontendMain informa si no hay entorno gráfico disponible.
+
+El script opcional ofrece el mismo arranque desde PowerShell:
+
+```powershell
+.\scripts\frontend.ps1 -Server http://127.0.0.1:8080
+```
+
+El script utiliza java desde el PATH. También puede utilizarse la ruta completa al ejecutable del JDK 27 configurado
+en IntelliJ, como se indica en las instrucciones del backend.
+
+### Uso y límites de esta etapa
+
+1. En un cliente escribe tu nombre y pulsa Crear sala; copia su código.
+2. En el otro escribe un nombre distinto, pega el código y pulsa Unirme. También puedes seleccionar una sala.
+3. Espera a que aparezcan ambos jugadores y el estado activo. Las blancas empiezan.
+4. Selecciona e2 y e4 o introduce ambas casillas y pulsa Mover; después juega con negras desde el otro cliente.
+5. Para observar, selecciona o pega el código y pulsa Observar sin ocupar una plaza.
+6. Recorre las posiciones del histórico y utiliza En directo para regresar a la posición actual.
+
+Estos pasos describen el uso previsto; los resultados del recorrido real se consignan en el registro de la
+sesión 12. Las vistas automatizadas se explican por separado en la sección de integración y evidencias.
+Las credenciales se conservan sólo en la memoria del controlador. Si se cierra el cliente, una nueva
+instancia no recupera automáticamente su plaza: puede observar la partida, pero no dispone del token anterior.
+Reiniciar únicamente el backend con el mismo directorio conserva sus hashes y permite continuar a los clientes que
+siguen abiertos con su sesión local.
+
+La interfaz desactiva las órdenes para espectadores, salas no activas y reproducción del histórico. Todavía puede
+permitir intentar un movimiento durante el turno del rival; el backend lo rechaza sin aplicar la jugada. La mejora
+del bloqueo visual por turno queda pendiente para la sesión 13. Se mantienen las limitaciones del ajedrez declarado:
+sin enroque, captura al paso ni adjudicación automática por mate, ahogado o tablas.
+
+## Integración y evidencias automatizadas
+
+La sesión 11 incorpora EndToEndTest, el flujo de GitHub Actions y tres vistas renderizadas de los componentes
+Swing. EndToEndTest utiliza el backend y el repositorio de archivos reales, comunicación HTTP sobre loopback y
+los mismos controladores y paneles que emplea la aplicación de escritorio.
+
+### Recorrido de integración
+
+El recorrido inicial compone tres ChessController con HttpChessService dentro del mismo proceso: Ana con blancas,
+Luis con negras y un espectador. El servidor escucha en un puerto local disponible y FileRoomRepository utiliza
+un directorio temporal de JUnit, separado del directorio de partidas utilizado al arrancar la aplicación.
+Los adaptadores reciben un HttpClient compartido que se cierra al terminar el caso. Cada controlador conserva
+su sesión; compartir el transporte no mezcla los tokens de los jugadores.
+
+La prueba crea una sala, incorpora al segundo jugador y rechaza e2–e5. Una consulta posterior comprueba que la
+versión no cambió y que no se añadió ningún movimiento. Después registra
+cuatro movimientos válidos: e2–e4, e7–e5, g1–f3 y b8–c6. El espectador consulta la sala, selecciona la posición tras
+el segundo movimiento, no puede enviar una jugada y vuelve a la posición final con live().
+
+A continuación se cierra el servidor y se construyen otras instancias de HttpChessServer, ChessService y
+FileRoomRepository sobre el mismo directorio temporal. Un nuevo controlador observador consulta la partida,
+comprueba el FEN final y los cuatro movimientos y selecciona la posición inicial del histórico. Al cerrar ese
+servidor, refresh comunica ServiceException y conserva la vista ya cargada.
+
+Las llamadas del recorrido pasan por HTTP y disco reales, pero se ejecutan en una misma JVM. La recuperación
+consiste en volver a cargar la partida; esta prueba no restaura una sesión de jugador ni recupera tokens después
+de cerrar un cliente. Las acciones se solicitan a los controladores y no mediante clics en ventanas de escritorio.
+El recorrido de escritorio se registra por separado en docs/MANUAL_VERIFICATION.md. En la adaptación asíncrona
+las esperas de este test se realizan desde JUnit, con un máximo de diez segundos por operación; los controladores
+y la interfaz de producción consumen los futuros mediante continuaciones.
+
+### Vistas automatizadas de la sesión 11
+
+Estas imágenes se obtienen renderizando ChessPanel y BoardPanel en modo headless. Los datos de las salas y las
+posiciones proceden del recorrido HTTP local real descrito arriba. El panel se dibuja en una BufferedImage y se
+exporta a PNG sin abrir una ventana interactiva; no son capturas de una prueba manual de botones o diálogos.
+
+Sala creada por Ana y pendiente de un segundo jugador. Renderizado Swing headless con datos del backend HTTP local:
+
+![Sala creada y código disponible](docs/images/01-sala.png)
+
+Partida tras e2–e4, e7–e5, g1–f3 y b8–c6. Renderizado Swing headless con cuatro movimientos guardados mediante HTTP:
+
+![Tablero después de cuatro movimientos](docs/images/02-tablero.png)
+
+Espectador en la posición tras el segundo movimiento, con cuatro movimientos conservados en el histórico.
+Renderizado Swing headless a partir de la sala consultada por HTTP local:
+
+![Reproducción de la segunda posición del histórico](docs/images/03-historico.png)
+
+Las imágenes se exportan sólo cuando se define la propiedad chess.evidence. Para regenerarlas desde la raíz del
+proyecto:
+
+```text
+mvn test "-Dchess.evidence=target/evidence" "-Djava.awt.headless=true"
+```
+
+Los tres archivos se generan en target/evidence. Después de comprobar su contenido y legibilidad, se incorporan
+a docs/images con sus mismos nombres. El comando habitual mvn clean verify comprueba el caso de integración,
+pero no exporta imágenes si no se proporciona esa propiedad.
+
+### Verificación en GitHub Actions
+
+El workflow de `.github/workflows/verify.yml` está configurado en inglés para comprobar el proyecto con JDK 27
+al recibir un push o una pull request. Compila y ejecuta las pruebas sobre el contenido publicado. Una ejecución
+local correcta no acredita por sí sola el resultado del workflow remoto.
+
+Después del push, debe abrirse Actions en GitHub y localizar la ejecución correspondiente al commit publicado.
+Hay que comprobar su resultado y sus registros antes de afirmar que la verificación remota ha pasado. Esta
+documentación no da por verificada una ejecución remota que todavía no se haya consultado.
+
+## Verificación manual de la sesión 12
+
+El registro del recorrido de escritorio se mantiene en [MANUAL_VERIFICATION.md](docs/MANUAL_VERIFICATION.md).
+Recoge la fecha, el entorno, la versión probada, los resultados de cada paso y las incidencias. Las pruebas
+automáticas y las vistas headless de la sesión 11 se documentan por separado.
+
+El recorrido contempla dos ventanas de jugadores y una de observador, movimientos e histórico, parada del servidor
+y recuperación al reiniciarlo con el mismo directorio. Los clientes se mantienen abiertos para conservar sus
+credenciales locales; esto no supone recuperar sesiones después de cerrar un frontend. Los resultados concretos
+se consignan en el registro, sin dar por correctos pasos que todavía no se hayan realizado.
+
+### Capturas manuales del recorrido
+
+Estas capturas corresponden a las ventanas del recorrido identificado en el registro. Se conservan separadas
+de los tres renderizados headless documentados en la sesión 11.
+
+Vista en directo con los jugadores conectados:
+
+![Vista manual de la partida en directo](docs/images/manual-01-live.png)
+
+Consulta del histórico en una ventana de observador:
+
+![Vista manual del histórico](docs/images/manual-02-history.png)
+
+Estado de la interfaz después de recuperar la conexión con el backend:
+
+![Vista manual tras recuperar el servidor](docs/images/manual-03-recovery.png)
 
 ## Hitos del proyecto
 
@@ -355,11 +643,17 @@ se mantiene como identificador del artefacto durante el desarrollo; la entrega f
 El primer hito se comprobó con 52 pruebas. Los casos de uso del backend, la persistencia y la API HTTP quedan
 fuera de esa etiqueta.
 
-El segundo hito previsto, `milestone-02-backend-and-frontend-core`, reúne el backend ejecutable con HTTP y
-persistencia y los casos de uso del frontend comprobados con un doble. El adaptador HTTP del frontend y Swing
-se incorporarán después. Los cambios se integran primero en develop; al cerrar la sesión se integra develop
-en main, se comprueba con `mvn clean verify` y se etiqueta el commit si pasa la verificación. La rama main del
-repositorio remoto pasa del primer al segundo hito al publicar la integración comprobada.
+El segundo hito, `milestone-02-backend-and-frontend-core`, reúne el backend ejecutable con HTTP y persistencia
+y los casos de uso del frontend comprobados con un doble. Se cerró con 74 pruebas y corresponde al commit
+`ddb144c`. El cliente HTTP del frontend y Swing quedan fuera de esa etiqueta.
+
+El tercer hito, `milestone-03-integrated-system`, agrupa la integración del sistema, la comunicación asíncrona
+del frontend y la verificación manual registrada. No modifica las etiquetas históricas de los dos primeros hitos.
+
+La sesión 12 separa dos cambios comprobables en commits distintos: la refactorización asíncrona y la documentación
+del recorrido manual con sus capturas. El cierre integra la rama de trabajo en develop y después en main, verifica
+el conjunto y etiqueta el commit comprobado. El resultado manual se consulta en su registro; la etiqueta de entrega
+final se reserva para una etapa posterior.
 
 ## Compilación y pruebas
 
@@ -377,9 +671,14 @@ Verificaciones locales:
 - Sesión 06, 2 de noviembre de 2026: 62 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 07, 3 de noviembre de 2026: 65 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 08, 5 de noviembre de 2026: 74 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 09, 7 de noviembre de 2026: 79 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 10, 10 de noviembre de 2026: 82 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 11, 12 de noviembre de 2026: 83 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 12, 14 de noviembre de 2026: 85 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
-FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 9.
+FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 10; HttpChessServiceTest, 6;
+SwingPresentationTest, 3; EndToEndTest, 1.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -409,12 +708,30 @@ de almacenamiento mediante MemoryRepository y comprueba la respuesta 500 sin pub
 Estas pruebas no abren ventanas ni ejecutan el JAR en procesos separados. Los comandos de arranque anteriores
 describen cómo utilizar la aplicación; no constituyen un registro de una prueba manual del proceso.
 
-Los nueve casos de ChessControllerTest utilizan FakeService, una implementación del puerto del frontend para
-pruebas. Comprueban la sustitución del servicio y la entrada de nombre, el envío del token y versión observados,
-el bloqueo del espectador, la conservación de la posición histórica al llegar movimientos, los límites del
-histórico, la conservación de estado ante un fallo simulado del servicio, el rechazo de entradas vacías, la
-reutilización de una sesión local y el bloqueo de jugadas en una sala en espera. No realizan peticiones HTTP
-ni abren ventanas.
+ChessControllerTest contiene diez casos con un servicio doble asíncrono. Conserva las comprobaciones de sesiones,
+credenciales y versiones, espectador, reproducción y sus límites, fallos del servicio, entradas inválidas y salas
+en espera. El nuevo caso mantiene pendiente una respuesta: comprueba que el estado anterior sigue visible y que
+la nueva sala sólo se publica después de completar correctamente el futuro del controlador. No usa HTTP ni ventanas.
+
+HttpChessServiceTest contiene seis casos. Cuatro utilizan un servidor HTTP de loopback con respuestas programadas
+para comprobar nombres Unicode, mensajes, credenciales, versión, errores y dirección base. Otro mantiene retenida
+la respuesta y comprueba que la llamada devuelve un futuro pendiente antes de liberarla. El caso integrado conecta
+dos controladores al backend con FileRoomRepository, mueve con ambos colores y conserva vista y sesión local cuando
+se detiene el servidor. No abre Swing ni lanza clientes en procesos independientes. Las esperas se limitan al hilo
+de JUnit y tienen un límite temporal; estas pruebas no fuerzan el vencimiento de los timeouts configurados del cliente.
+
+SwingPresentationTest conserva tres casos: correspondencia de clics y casillas en ambas orientaciones, construcción
+y dibujo en memoria sin llamadas de servicio y comportamiento con un futuro pendiente. Este último comprueba que
+iniciar la consulta no espera su respuesta, que el hilo gráfico sigue atendiendo eventos, que los controles siguen
+deshabilitados mientras está pendiente y que se habilitan en el hilo de Swing después de completarla. La imagen
+en memoria de esta suite no es una captura manual ni un archivo exportado. No hay una prueba automática de los
+diálogos modales de promoción o abandono.
+
+El caso de EndToEndTest comprueba el recorrido integrado de sala, cuatro movimientos, espectador, posiciones
+históricas, recuperación del repositorio y desconexión descrito en su sección. Además puede exportar las tres
+vistas Swing si se proporciona chess.evidence. El test espera sus operaciones asíncronas desde JUnit antes de
+comprobarlas; también revisa que la versión remota no cambie tras el movimiento inválido. No automatiza clics de
+una sesión de escritorio ni la recuperación de credenciales de jugador tras cerrar el cliente.
 
 ## Organización de ramas
 
@@ -428,7 +745,12 @@ ni abren ventanas.
 - feature/06-file-persistence: almacenamiento en archivos, recuperación y pruebas del repositorio.
 - feature/07-http-api: API HTTP, arranque del backend y empaquetado ejecutable.
 - feature/08-frontend-use-cases: puerto del frontend, controlador, sesiones locales e histórico.
+- feature/09-http-client: adaptador HTTP del frontend, mensajes y errores de comunicación.
+- feature/10-swing-ui: presentación Swing, arranque del cliente y trabajo en segundo plano.
+- feature/11-integration-evidence: prueba integrada, vistas renderizadas y verificación en GitHub Actions.
+- feature/12-manual-verification: adaptación asíncrona, recorrido manual y cierre del sistema integrado.
 
 ## Próximas etapas
 
-Adaptador de cliente HTTP del frontend, interfaz gráfica Swing e integración de ambas aplicaciones.
+Mejora del bloqueo visual por turno, revisión de la interacción y adaptación al material de las próximas clases.
+Los cambios posteriores partirán del sistema integrado y se comprobarán antes de incorporarse a sus ramas estables.
