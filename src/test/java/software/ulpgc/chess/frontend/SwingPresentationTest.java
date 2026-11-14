@@ -14,6 +14,7 @@ import java.awt.*;
 import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -56,54 +57,58 @@ class SwingPresentationTest {
         });
     }
 
-    @Test void pollingRunsOutsideEdtAndKeepsInterfaceResponsiveWhileServiceWaits() throws Exception {
+    @Test void pendingPollingKeepsInterfaceResponsiveAndPublishesControlsOnEdt() throws Exception {
         CountDownLatch serviceEntered = new CountDownLatch(1);
-        CountDownLatch releaseService = new CountDownLatch(1);
+        CountDownLatch startupReturned = new CountDownLatch(1);
+        CompletableFuture<List<RoomView>> response = new CompletableFuture<>();
         CountDownLatch edtResponded = new CountDownLatch(1);
         CountDownLatch controlsEnabled = new CountDownLatch(1);
-        AtomicBoolean calledOnEdt = new AtomicBoolean();
+        AtomicBoolean enabledOnEdt = new AtomicBoolean();
         AtomicBoolean disabledWhileWaiting = new AtomicBoolean();
         AtomicReference<ChessPanel> panel = new AtomicReference<>();
         AtomicReference<JButton> refresh = new AtomicReference<>();
+        AtomicReference<Throwable> startupFailure = new AtomicReference<>();
         ChessService service = new NoNetworkService() {
-            @Override public List<RoomView> rooms() {
-                if (SwingUtilities.isEventDispatchThread()) calledOnEdt.set(true);
+            @Override public CompletableFuture<List<RoomView>> rooms() {
                 serviceEntered.countDown();
-                try {
-                    if (!releaseService.await(5, TimeUnit.SECONDS))
-                        throw new AssertionError("The test did not release the service request");
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError("The service request was interrupted", e);
-                }
-                return List.of();
+                return response;
             }
         };
         try {
-            SwingUtilities.invokeAndWait(() -> {
-                panel.set(new ChessPanel(new ChessController(service)));
-                refresh.set(findButton(panel.get(), "Actualizar salas"));
-                assertNotNull(refresh.get());
-                refresh.get().addPropertyChangeListener("enabled", event -> {
-                    if (Boolean.TRUE.equals(event.getNewValue())) controlsEnabled.countDown();
-                });
-                panel.get().startPolling();
-                panel.get().stopPolling();
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    panel.set(new ChessPanel(new ChessController(service)));
+                    refresh.set(findButton(panel.get(), "Actualizar salas"));
+                    assertNotNull(refresh.get());
+                    refresh.get().addPropertyChangeListener("enabled", event -> {
+                        if (Boolean.TRUE.equals(event.getNewValue())) {
+                            enabledOnEdt.set(SwingUtilities.isEventDispatchThread());
+                            controlsEnabled.countDown();
+                        }
+                    });
+                    panel.get().startPolling();
+                    panel.get().stopPolling();
+                } catch (Throwable failure) {
+                    startupFailure.set(failure);
+                } finally { startupReturned.countDown(); }
             });
-            assertTrue(serviceEntered.await(5, TimeUnit.SECONDS), "The background request should start");
-            assertFalse(calledOnEdt.get(), "Service calls must not run on the EDT");
+            assertTrue(startupReturned.await(5, TimeUnit.SECONDS), "Starting polling must return before the response arrives");
+            assertNull(startupFailure.get());
+            assertTrue(serviceEntered.await(5, TimeUnit.SECONDS), "The asynchronous request should start");
+            assertFalse(response.isDone(), "Starting the request must not wait for its response");
             SwingUtilities.invokeLater(() -> {
                 disabledWhileWaiting.set(!refresh.get().isEnabled());
                 edtResponded.countDown();
             });
-            assertTrue(edtResponded.await(5, TimeUnit.SECONDS), "The EDT must respond while the request is blocked");
-            assertTrue(disabledWhileWaiting.get(), "A second request must remain disabled while the worker is busy");
-            releaseService.countDown();
-            assertTrue(controlsEnabled.await(5, TimeUnit.SECONDS), "The worker must enable the controls when it finishes");
+            assertTrue(edtResponded.await(5, TimeUnit.SECONDS), "The EDT must respond while the future is pending");
+            assertTrue(disabledWhileWaiting.get(), "A second request must remain disabled until completion");
+            assertEquals(1, controlsEnabled.getCount(), "Controls must not be enabled before the response arrives");
+            response.complete(List.of());
+            assertTrue(controlsEnabled.await(5, TimeUnit.SECONDS), "Completion must enable the controls");
             SwingUtilities.invokeAndWait(() -> assertTrue(refresh.get().isEnabled()));
-            assertFalse(calledOnEdt.get());
+            assertTrue(enabledOnEdt.get(), "UI updates must return to the EDT even when completion happens on the test thread");
         } finally {
-            releaseService.countDown();
+            response.complete(List.of());
             if (panel.get() != null) SwingUtilities.invokeAndWait(() -> panel.get().stopPolling());
         }
     }
@@ -128,11 +133,11 @@ class SwingPresentationTest {
     }
     private static class NoNetworkService implements ChessService {
         private AssertionError called() { return new AssertionError("The presentation must not perform network requests on construction"); }
-        @Override public List<RoomView> rooms() { throw called(); }
-        @Override public RoomView room(String id) { throw called(); }
-        @Override public SessionView create(String player) { throw called(); }
-        @Override public SessionView join(String id, String player) { throw called(); }
-        @Override public RoomView move(String id, String token, String from, String to, String promotion, long version) { throw called(); }
-        @Override public RoomView resign(String id, String token, long version) { throw called(); }
+        @Override public CompletableFuture<List<RoomView>> rooms() { throw called(); }
+        @Override public CompletableFuture<RoomView> room(String id) { throw called(); }
+        @Override public CompletableFuture<SessionView> create(String player) { throw called(); }
+        @Override public CompletableFuture<SessionView> join(String id, String player) { throw called(); }
+        @Override public CompletableFuture<RoomView> move(String id, String token, String from, String to, String promotion, long version) { throw called(); }
+        @Override public CompletableFuture<RoomView> resign(String id, String token, long version) { throw called(); }
     }
 }

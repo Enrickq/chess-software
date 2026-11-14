@@ -10,7 +10,9 @@ import javax.swing.border.EmptyBorder;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.function.Supplier;
 
 /** Swing input adapter. Construction and loadView are offline and can be rendered headlessly. */
 public final class ChessPanel extends JPanel {
@@ -73,7 +75,7 @@ public final class ChessPanel extends JPanel {
 
     /** Starts HTTP polling; call only when opening the interactive window. */
     public void startPolling() {
-        execute(() -> { controller.listRooms(); controller.refresh(); }, "Conectado. Elige una sala o crea la tuya.");
+        execute(() -> controller.listRooms().thenCompose(ignored -> controller.refresh()), "Conectado. Elige una sala o crea la tuya.");
         timer.start();
     }
     public void stopPolling() { timer.stop(); }
@@ -283,7 +285,7 @@ public final class ChessPanel extends JPanel {
             String id = selectedRoomId();
             execute(() -> controller.watch(id), "Sala abierta. Usa el historial para recorrer la partida.");
         });
-        refresh.addActionListener(e -> execute(() -> { controller.listRooms(); controller.refresh(); }, "Salas actualizadas."));
+        refresh.addActionListener(e -> execute(() -> controller.listRooms().thenCompose(ignored -> controller.refresh()), "Salas actualizadas."));
         copy.addActionListener(e -> {
             try {
                 Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(roomCode.getText()), null);
@@ -368,28 +370,29 @@ public final class ChessPanel extends JPanel {
         notice("Reproducción del historial. La partida continúa actualizándose; pulsa «En directo» para jugar.", false);
     }
 
-    private void execute(Runnable action, String success) {
+    private void execute(Supplier<CompletableFuture<Void>> action, String success) {
         if (busy) return;
         busy = true;
         updateEnabled();
-        new SwingWorker<Void, Void>() {
-            @Override protected Void doInBackground() { action.run(); return null; }
-            @Override protected void done() {
-                busy = false;
-                try {
-                    get();
-                    connection.setText("● Servidor conectado");
-                    if (success != null) { clearSelection(); notice(success, false); }
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    notice("La operación se interrumpió. Puedes reintentar.", true);
-                } catch (ExecutionException ex) {
-                    Throwable cause = ex.getCause();
-                    connection.setText("● Última petición fallida");
-                    notice(cause.getMessage() == null ? "No se pudo completar la operación." : cause.getMessage(), true);
-                } finally { loadView(); }
+        try {
+            action.get().whenCompleteAsync((ignored, failure) -> finish(success, failure), SwingUtilities::invokeLater);
+        } catch (RuntimeException failure) {
+            finish(success, failure);
+        }
+    }
+
+    private void finish(String success, Throwable failure) {
+        busy = false;
+        try {
+            if (failure == null) {
+                connection.setText("● Servidor conectado");
+                if (success != null) { clearSelection(); notice(success, false); }
+            } else {
+                while (failure instanceof CompletionException && failure.getCause() != null) failure = failure.getCause();
+                connection.setText("● Última petición fallida");
+                notice(failure.getMessage() == null ? "No se pudo completar la operación." : failure.getMessage(), true);
             }
-        }.execute();
+        } finally { loadView(); }
     }
 
     private void updateEnabled() {
