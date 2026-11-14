@@ -8,9 +8,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 
 /** Input use cases, independent of the UI and communication adapter.
- * The caller serializes commands (Swing uses one background worker at a time).
+ * The caller serializes operations and waits for their completion before reading or changing state.
  */
 public final class ChessController {
     public static final String INITIAL_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -22,40 +23,45 @@ public final class ChessController {
 
     public ChessController(ChessService service) { this.service = Objects.requireNonNull(service); }
 
-    public void listRooms() { rooms = List.copyOf(service.rooms()); }
+    public CompletableFuture<Void> listRooms() {
+        return service.rooms().thenAccept(loaded -> rooms = List.copyOf(loaded));
+    }
     public List<RoomView> rooms() { return rooms; }
 
-    public void create(String player) { accept(service.create(requireText(player, "Escribe tu nombre."))); }
+    public CompletableFuture<Void> create(String player) {
+        return service.create(requireText(player, "Escribe tu nombre.")).thenAccept(this::accept);
+    }
 
-    public void join(String id, String player) {
+    public CompletableFuture<Void> join(String id, String player) {
         String roomId = requireText(id, "Selecciona una sala o pega su código.");
-        if (sessions.containsKey(roomId)) { watch(roomId); return; }
-        accept(service.join(roomId, requireText(player, "Escribe tu nombre.")));
+        if (sessions.containsKey(roomId)) return watch(roomId);
+        return service.join(roomId, requireText(player, "Escribe tu nombre.")).thenAccept(this::accept);
     }
 
-    public void watch(String id) {
-        RoomView loaded = service.room(requireText(id, "Selecciona una sala o pega su código."));
-        current = loaded;
-        replayIndex = -1;
+    public CompletableFuture<Void> watch(String id) {
+        return service.room(requireText(id, "Selecciona una sala o pega su código.")).thenAccept(loaded -> {
+            current = loaded;
+            replayIndex = -1;
+        });
     }
 
-    public void refresh() {
-        if (current == null) { listRooms(); return; }
-        RoomView loaded = service.room(current.id());
-        current = loaded;
-        if (replayIndex > loaded.moves().size()) replayIndex = loaded.moves().size();
+    public CompletableFuture<Void> refresh() {
+        if (current == null) return listRooms();
+        return service.room(current.id()).thenAccept(loaded -> {
+            current = loaded;
+            if (replayIndex > loaded.moves().size()) replayIndex = loaded.moves().size();
+        });
     }
 
-    public void move(String from, String to, String promotion) {
+    public CompletableFuture<Void> move(String from, String to, String promotion) {
         SessionView session = requirePlayable();
-        RoomView updated = service.move(current.id(), session.token(), from, to,
-                promotion == null ? "" : promotion, current.version());
-        current = updated;
+        return service.move(current.id(), session.token(), from, to,
+                promotion == null ? "" : promotion, current.version()).thenAccept(updated -> current = updated);
     }
 
-    public void resign() {
+    public CompletableFuture<Void> resign() {
         SessionView session = requirePlayable();
-        current = service.resign(current.id(), session.token(), current.version());
+        return service.resign(current.id(), session.token(), current.version()).thenAccept(updated -> current = updated);
     }
 
     public void replayAt(int index) {

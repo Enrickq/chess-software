@@ -20,6 +20,9 @@ import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Real HTTP, real disk adapter and the same controllers/panel used by the desktop frontend. */
@@ -32,27 +35,27 @@ class EndToEndTest {
             String finalFen;
             try (var server = server()) {
                 ChessController white = client(server, http), black = client(server, http), spectator = client(server, http);
-                white.create("Ana");
+                await(white.create("Ana"));
                 id = white.view().room().id();
-                white.listRooms();
+                await(white.listRooms());
                 capture(white, "01-sala.png", "Sala creada por Ana. Código listo para compartir con el segundo jugador.");
-                black.join(id, "Luis");
-                white.refresh();
+                await(black.join(id, "Luis"));
+                await(white.refresh());
                 assertEquals("ACTIVE", white.view().room().status());
                 long versionBeforeInvalidMove = white.view().room().version();
-                assertThrows(ServiceException.class, () -> white.move("e2", "e5", ""));
-                white.refresh();
+                assertThrows(ServiceException.class, () -> await(white.move("e2", "e5", "")));
+                await(white.refresh());
                 assertEquals(versionBeforeInvalidMove, white.view().room().version());
                 assertEquals(0, white.view().room().moves().size());
-                white.move("e2", "e4", "");
-                black.refresh(); black.move("e7", "e5", "");
-                white.refresh(); white.move("g1", "f3", "");
-                black.refresh(); black.move("b8", "c6", "");
-                white.refresh(); white.listRooms();
+                await(white.move("e2", "e4", ""));
+                await(black.refresh()); await(black.move("e7", "e5", ""));
+                await(white.refresh()); await(white.move("g1", "f3", ""));
+                await(black.refresh()); await(black.move("b8", "c6", ""));
+                await(white.refresh()); await(white.listRooms());
                 finalFen = white.view().room().fen();
                 assertEquals(4, white.view().room().moves().size());
                 capture(white, "02-tablero.png", "Dos jugadores conectados por HTTP. Cuatro movimientos registrados y guardados en disco.");
-                spectator.watch(id); spectator.listRooms(); spectator.replayAt(2);
+                await(spectator.watch(id)); await(spectator.listRooms()); spectator.replayAt(2);
                 assertFalse(spectator.view().live());
                 assertEquals(spectator.view().room().moves().get(1).fen(), spectator.view().fen());
                 assertNotEquals(finalFen, spectator.view().fen());
@@ -64,14 +67,24 @@ class EndToEndTest {
             ChessController observer;
             try (var restarted = server()) {
                 observer = client(restarted, http);
-                observer.watch(id);
+                await(observer.watch(id));
                 assertEquals(finalFen, observer.view().room().fen());
                 assertEquals(4, observer.view().room().moves().size());
                 observer.replayAt(0);
                 assertEquals(ChessController.INITIAL_FEN, observer.view().fen());
             }
-            assertThrows(ServiceException.class, observer::refresh);
+            assertThrows(ServiceException.class, () -> await(observer.refresh()));
             assertEquals(4, observer.view().room().moves().size(), "La desconexión no borra la vista cargada");
+        }
+    }
+
+    /** Only the JUnit thread waits; application code consumes asynchronous completions. */
+    private void await(CompletableFuture<Void> operation) throws Exception {
+        try { operation.get(10, TimeUnit.SECONDS); }
+        catch (ExecutionException e) {
+            if (e.getCause() instanceof RuntimeException cause) throw cause;
+            if (e.getCause() instanceof Error cause) throw cause;
+            throw e;
         }
     }
 
