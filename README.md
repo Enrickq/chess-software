@@ -42,7 +42,8 @@ FenPositionDeserializer compone los deserializadores de tablero y estado mediant
 EndToEndTest incorpora un recorrido automatizado de salas, movimientos, histórico y recuperación con servidor
 HTTP local y archivos reales. Las vistas Swing de esos estados se renderizan sin abrir ventanas interactivas.
 La sesión 12 mantiene la asincronía HTTP mediante CompletableFuture hasta la publicación del estado y su consumo
-en la interfaz; el recorrido manual y sus resultados se documentan por separado.
+en la interfaz; el recorrido manual y sus resultados se documentan por separado. La sesión 13 condiciona los controles
+de movimiento al turno propio y conserva el abandono durante el turno rival.
 
 ## Serialización FEN
 
@@ -327,7 +328,7 @@ desde el cliente HTTP hasta el consumo del resultado. El controlador no depende 
 | frontend.ports.ChessService | Puerto de salida: devuelve CompletableFuture de listados, RoomView o SessionView para las operaciones remotas. |
 | ServiceException | Comunica fallos del servicio sin exponer tipos HTTP en el puerto. |
 | ChessController | Coordina las acciones y actualiza listado, sala y sesiones mediante continuaciones thenAccept. |
-| ChessController.View | Instantánea inmutable con sala pública, color local, indicador de directo, índice y FEN visible. |
+| ChessController.View | Instantánea con sala pública, color, directo, índice y FEN; canPlay y canResign expresan permisos distintos. |
 
 El puerto conserva las operaciones rooms, room, create, join, move y resign. Los métodos del controlador que
 consultan ese servicio devuelven CompletableFuture<Void>; ese futuro sólo termina correctamente después de
@@ -346,10 +347,11 @@ no ocupa una plaza: si el controlador conserva una sesión para ella muestra el 
 espectador. Volver a abrir una sala propia reutiliza su sesión local, sin volver a solicitar el puesto de negras.
 Las sesiones se conservan mientras existe el controlador y no se escriben en disco.
 
-Mover y abandonar requieren una sala activa, una sesión de jugador y la vista en directo. El controlador envía
-el token y la última versión conocida mediante el puerto; la autorización final y las reglas permanecen en el
-backend. El token no forma parte de ChessController.View. Un argumento local inválido puede provocar una excepción
-antes de devolver un futuro; un fallo remoto se comunica mediante un futuro completado excepcionalmente.
+Mover y abandonar requieren una sala activa, una sesión de jugador y la vista en directo. Mover exige además
+el turno propio; abandonar puede solicitarse durante el turno del rival. El controlador envía el token y la última
+versión conocida mediante el puerto; la autorización final y las reglas permanecen en el backend. El token no
+forma parte de ChessController.View. Un argumento local o una condición de la acción inválidos pueden provocar
+una excepción antes de devolver un futuro; un fallo remoto se comunica mediante un futuro completado excepcionalmente.
 
 ### Estado actual e histórico
 
@@ -362,6 +364,36 @@ refresh() consulta la sala abierta o actualiza el listado si aún no hay sala. L
 mientras su índice siga disponible. Hasta completar correctamente la respuesta se mantiene el estado anterior;
 thenAccept publica la nueva instantánea antes de que finalice el futuro del controlador. Si la operación falla,
 se mantienen la última vista y la sesión local y el llamador puede volver a consultar.
+
+### Permisos por turno y acción
+
+La sesión 13 separa la posibilidad de mover de la de abandonar. View.canPlay() exige una sala ACTIVE, una sesión
+de jugador, la vista en directo y que el turno del FEN coincida con su color: White con w o Black con b. El método
+lee el segundo campo del FEN de la vista; si no existe un turno reconocible para ese jugador no habilita mover.
+View.canResign() mantiene las condiciones de sala activa, participación y directo, sin exigir el turno propio.
+
+| Situación de la vista | canPlay() | canResign() |
+|---|---|---|
+| Jugador, sala activa, directo y turno propio | true | true |
+| Jugador, sala activa, directo y turno rival | false | true |
+| Espectador | false | false |
+| Sala en espera o partida terminada | false | false |
+| Reproducción de una posición del histórico | false | false |
+
+ChessController.move también rechaza localmente una jugada fuera de turno antes de llamar al puerto de servicio.
+Es una excepción inmediata de las condiciones de la acción. resign sigue permitido durante el turno rival y no
+se vincula a canPlay. La autoridad final permanece en el backend: comprueba credencial, versión, estado de la sala
+y, para mover, turno y reglas. El permiso local se calcula sobre la última instantánea recibida y no sustituye
+la comprobación de una versión que pudiera haber cambiado en el servidor.
+
+ChessPanel añade busy a esos permisos: Mover, los campos Origen y Destino y la selección de piezas sólo aceptan
+acciones si no hay otra operación pendiente y canPlay es true. Abandonar partida utiliza !busy y canResign, por
+lo que continúa disponible durante el turno rival. Al cargar una vista se limpian la selección y ambos campos
+si se pierde el permiso para mover, cambia la sala o cambia la posición FEN. Las finalizaciones siguen llegando
+al hilo de Swing mediante whenCompleteAsync; el cambio no introduce esperas bloqueantes en producción.
+
+Las pruebas de estos permisos se verificaron el 17 de noviembre de 2026. El registro y las capturas de la
+sesión 12 corresponden a la versión anterior; sus resultados se conservan ligados a aquel código.
 
 ## Cliente HTTP asíncrono del frontend
 
@@ -530,9 +562,9 @@ instancia no recupera automáticamente su plaza: puede observar la partida, pero
 Reiniciar únicamente el backend con el mismo directorio conserva sus hashes y permite continuar a los clientes que
 siguen abiertos con su sesión local.
 
-La interfaz desactiva las órdenes para espectadores, salas no activas y reproducción del histórico. Todavía puede
-permitir intentar un movimiento durante el turno del rival; el backend lo rechaza sin aplicar la jugada. La mejora
-del bloqueo visual por turno queda pendiente para la sesión 13. Se mantienen las limitaciones del ajedrez declarado:
+La interfaz desactiva las órdenes para espectadores, salas no activas y reproducción del histórico. Fuera del
+turno propio se deshabilitan el movimiento, sus campos y la selección de piezas; abandonar sigue disponible si
+la partida está activa y no hay otra operación en curso. Se mantienen las limitaciones del ajedrez declarado:
 sin enroque, captura al paso ni adjudicación automática por mate, ahogado o tablas.
 
 ## Integración y evidencias automatizadas
@@ -609,8 +641,13 @@ documentación no da por verificada una ejecución remota que todavía no se hay
 ## Verificación manual de la sesión 12
 
 El registro del recorrido de escritorio se mantiene en [MANUAL_VERIFICATION.md](docs/MANUAL_VERIFICATION.md).
-Recoge la fecha, el entorno, la versión probada, los resultados de cada paso y las incidencias. Las pruebas
-automáticas y las vistas headless de la sesión 11 se documentan por separado.
+Recoge la fecha, el entorno, la versión probada, los resultados de cada paso y las incidencias. Corresponde al
+código bdba63c, anterior a la sesión 13. Las pruebas automáticas y las vistas headless de la sesión 11 se documentan
+por separado.
+
+M07 registra el rechazo del backend al intentar una jugada fuera de turno en esa versión. Se conserva como evidencia
+histórica; no describe el bloqueo local de controles incorporado después. El registro y sus capturas no se reescriben
+para representar la versión nueva. La comprobación de la sesión 13 se realiza sobre sus archivos y su recorrido local.
 
 El recorrido contempla dos ventanas de jugadores y una de observador, movimientos e histórico, parada del servidor
 y recuperación al reiniciarlo con el mismo directorio. Los clientes se mantienen abiertos para conservar sus
@@ -619,8 +656,8 @@ se consignan en el registro, sin dar por correctos pasos que todavía no se haya
 
 ### Capturas manuales del recorrido
 
-Estas capturas corresponden a las ventanas del recorrido identificado en el registro. Se conservan separadas
-de los tres renderizados headless documentados en la sesión 11.
+Estas capturas corresponden al recorrido de bdba63c identificado en el registro, antes de la sesión 13. Se conservan
+sin sustituirlas y separadas de los tres renderizados headless documentados en la sesión 11.
 
 Vista en directo con los jugadores conectados:
 
@@ -650,10 +687,12 @@ y los casos de uso del frontend comprobados con un doble. Se cerró con 74 prueb
 El tercer hito, `milestone-03-integrated-system`, agrupa la integración del sistema, la comunicación asíncrona
 del frontend y la verificación manual registrada. No modifica las etiquetas históricas de los dos primeros hitos.
 
-La sesión 12 separa dos cambios comprobables en commits distintos: la refactorización asíncrona y la documentación
-del recorrido manual con sus capturas. El cierre integra la rama de trabajo en develop y después en main, verifica
-el conjunto y etiqueta el commit comprobado. El resultado manual se consulta en su registro; la etiqueta de entrega
-final se reserva para una etapa posterior.
+La sesión 12 separó la refactorización asíncrona y la documentación del recorrido manual en dos commits. El cierre
+quedó comprobado con 85 pruebas; main y milestone-03-integrated-system conservan el commit 6793786. El resultado
+manual de esa etapa se consulta en su registro.
+
+Los cambios de la sesión 13 se agrupan en feature/13-turn-controls para su integración en develop. Esta etapa
+conserva main y las etiquetas existentes. La etiqueta de entrega final se reserva para una etapa posterior.
 
 ## Compilación y pruebas
 
@@ -675,10 +714,11 @@ Verificaciones locales:
 - Sesión 10, 10 de noviembre de 2026: 82 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 11, 12 de noviembre de 2026: 83 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 12, 14 de noviembre de 2026: 85 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 13, 17 de noviembre de 2026: 88 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
-FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 10; HttpChessServiceTest, 6;
-SwingPresentationTest, 3; EndToEndTest, 1.
+FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 12; HttpChessServiceTest, 6;
+SwingPresentationTest, 4; EndToEndTest, 1.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -708,10 +748,12 @@ de almacenamiento mediante MemoryRepository y comprueba la respuesta 500 sin pub
 Estas pruebas no abren ventanas ni ejecutan el JAR en procesos separados. Los comandos de arranque anteriores
 describen cómo utilizar la aplicación; no constituyen un registro de una prueba manual del proceso.
 
-ChessControllerTest contiene diez casos con un servicio doble asíncrono. Conserva las comprobaciones de sesiones,
-credenciales y versiones, espectador, reproducción y sus límites, fallos del servicio, entradas inválidas y salas
-en espera. El nuevo caso mantiene pendiente una respuesta: comprueba que el estado anterior sigue visible y que
-la nueva sala sólo se publica después de completar correctamente el futuro del controlador. No usa HTTP ni ventanas.
+ChessControllerTest contiene doce casos con un servicio doble asíncrono. Comprueba sesiones, credenciales y
+versiones, espectador, reproducción y sus límites, fallos del servicio, entradas inválidas y salas en espera.
+Una respuesta pendiente conserva el estado anterior hasta que termina correctamente el futuro del controlador.
+Los dos casos de la sesión 13 comprueban la alternancia para ambos colores y que una jugada fuera de turno no
+llegue al puerto, y el abandono durante el turno rival para ambos jugadores, seguido del bloqueo de nuevas órdenes
+en una partida terminada. No usa HTTP ni ventanas.
 
 HttpChessServiceTest contiene seis casos. Cuatro utilizan un servidor HTTP de loopback con respuestas programadas
 para comprobar nombres Unicode, mensajes, credenciales, versión, errores y dirección base. Otro mantiene retenida
@@ -720,12 +762,13 @@ dos controladores al backend con FileRoomRepository, mueve con ambos colores y c
 se detiene el servidor. No abre Swing ni lanza clientes en procesos independientes. Las esperas se limitan al hilo
 de JUnit y tienen un límite temporal; estas pruebas no fuerzan el vencimiento de los timeouts configurados del cliente.
 
-SwingPresentationTest conserva tres casos: correspondencia de clics y casillas en ambas orientaciones, construcción
-y dibujo en memoria sin llamadas de servicio y comportamiento con un futuro pendiente. Este último comprueba que
-iniciar la consulta no espera su respuesta, que el hilo gráfico sigue atendiendo eventos, que los controles siguen
-deshabilitados mientras está pendiente y que se habilitan en el hilo de Swing después de completarla. La imagen
-en memoria de esta suite no es una captura manual ni un archivo exportado. No hay una prueba automática de los
-diálogos modales de promoción o abandono.
+SwingPresentationTest contiene cuatro casos: correspondencia de clics y casillas en ambas orientaciones,
+construcción y dibujo en memoria sin llamadas de servicio, comportamiento con un futuro pendiente y permisos
+por turno. Se comprueba que iniciar una consulta no espera su respuesta, que el hilo gráfico sigue respondiendo
+y que los controles se habilitan en Swing después de completarla. El nuevo caso mantiene Mover, Origen y Destino
+deshabilitados durante el turno rival y permite Abandonar partida; durante refresh también bloquea el abandono
+y, al recibir el turno propio, habilita el movimiento en el hilo de eventos. La imagen en memoria de esta suite
+no es una captura manual ni un archivo exportado. No hay una prueba automática de los diálogos modales.
 
 El caso de EndToEndTest comprueba el recorrido integrado de sala, cuatro movimientos, espectador, posiciones
 históricas, recuperación del repositorio y desconexión descrito en su sección. Además puede exportar las tres
@@ -749,8 +792,9 @@ una sesión de escritorio ni la recuperación de credenciales de jugador tras ce
 - feature/10-swing-ui: presentación Swing, arranque del cliente y trabajo en segundo plano.
 - feature/11-integration-evidence: prueba integrada, vistas renderizadas y verificación en GitHub Actions.
 - feature/12-manual-verification: adaptación asíncrona, recorrido manual y cierre del sistema integrado.
+- feature/13-turn-controls: permisos por turno para mover y permiso independiente para abandonar.
 
 ## Próximas etapas
 
-Mejora del bloqueo visual por turno, revisión de la interacción y adaptación al material de las próximas clases.
-Los cambios posteriores partirán del sistema integrado y se comprobarán antes de incorporarse a sus ramas estables.
+Sesión 14, prevista para el 19 de noviembre de 2026: copiar el FEN visible y controlar la orientación del tablero.
+Los cambios posteriores se comprobarán sobre el sistema integrado y se adaptarán al material de las próximas clases.
