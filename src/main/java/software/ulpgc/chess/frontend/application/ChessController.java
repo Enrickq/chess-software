@@ -54,13 +54,14 @@ public final class ChessController {
     }
 
     public CompletableFuture<Void> move(String from, String to, String promotion) {
-        SessionView session = requirePlayable();
+        SessionView session = requireActiveSession();
+        if (!view().canPlay()) throw new IllegalStateException("No puedes mover con el turno actual. Espera tu turno o actualiza la sala.");
         return service.move(current.id(), session.token(), from, to,
                 promotion == null ? "" : promotion, current.version()).thenAccept(updated -> current = updated);
     }
 
     public CompletableFuture<Void> resign() {
-        SessionView session = requirePlayable();
+        SessionView session = requireActiveSession();
         return service.resign(current.id(), session.token(), current.version()).thenAccept(updated -> current = updated);
     }
 
@@ -82,7 +83,7 @@ public final class ChessController {
         return new View(current, session == null ? "" : session.color(), live, index, fen);
     }
 
-    private SessionView requirePlayable() {
+    private SessionView requireActiveSession() {
         if (current == null) throw new IllegalStateException("Primero entra en una sala.");
         SessionView session = sessions.get(current.id());
         if (session == null) throw new IllegalStateException("Estás viendo la partida como espectador.");
@@ -104,6 +105,13 @@ public final class ChessController {
 
     public record View(RoomView room, String color, boolean live, int index, String fen) {
         public boolean participant() { return !color.isEmpty(); }
-        public boolean canPlay() { return participant() && live && room != null && room.status().equals("ACTIVE"); }
+        public boolean canResign() { return participant() && live && room != null && room.status().equals("ACTIVE"); }
+        public boolean canPlay() {
+            if (!canResign() || fen == null) return false;
+            String[] fields = fen.strip().split("\\s+");
+            if (fields.length < 2) return false;
+            return color.equals("White") && fields[1].equals("w")
+                    || color.equals("Black") && fields[1].equals("b");
+        }
     }
 }

@@ -10,6 +10,7 @@ import javax.swing.border.EmptyBorder;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.function.Supplier;
@@ -86,8 +87,11 @@ public final class ChessPanel extends JPanel {
         try {
             ChessController.View previousView = view;
             view = controller.view();
-            if (previousView != null && !previousView.fen().equals(view.fen())) clearSelection();
             RoomView room = view.room();
+            boolean roomChanged = previousView != null && !Objects.equals(
+                    previousView.room() == null ? null : previousView.room().id(), room == null ? null : room.id());
+            if (!view.canPlay() || roomChanged
+                    || (previousView != null && !Objects.equals(previousView.fen(), view.fen()))) clearSelection();
             RoomView selectedRoom = roomList.getSelectedValue();
             roomModel.clear();
             for (RoomView item : controller.rooms())
@@ -323,7 +327,7 @@ public final class ChessPanel extends JPanel {
 
     private void selectSquare(String square) {
         if (busy) return;
-        if (!view.canPlay()) { notice(view.live() ? "Espera a tu rival o entra como jugador para mover." : "Pulsa «En directo» para volver a jugar.", false); return; }
+        if (!view.canPlay()) { notice(moveUnavailableMessage(), false); return; }
         Piece piece = board.pieceAt(square);
         boolean own = piece != null && piece.isWhite() == view.color().equals("White");
         if (selected == null || own) {
@@ -341,6 +345,7 @@ public final class ChessPanel extends JPanel {
 
     private void submitMove(String from, String to) {
         if (busy) return;
+        if (!view.canPlay()) { notice(moveUnavailableMessage(), false); return; }
         if (!from.matches("[a-h][1-8]") || !to.matches("[a-h][1-8]")) {
             notice("Escribe dos casillas válidas, por ejemplo e2 y e4.", true);
             return;
@@ -406,9 +411,18 @@ public final class ChessPanel extends JPanel {
         next.setEnabled(!busy && hasRoom && view.index() < view.room().moves().size());
         live.setEnabled(!busy && hasRoom && !view.live());
         move.setEnabled(!busy && view.canPlay());
-        origin.setEnabled(view.canPlay());
-        destination.setEnabled(view.canPlay());
-        resign.setEnabled(!busy && view.canPlay());
+        origin.setEnabled(!busy && view.canPlay());
+        destination.setEnabled(!busy && view.canPlay());
+        resign.setEnabled(!busy && view.canResign());
+    }
+
+    private String moveUnavailableMessage() {
+        if (view.room() == null) return "Primero crea una sala o únete a una partida.";
+        if (!view.live()) return "Estás revisando el historial. Pulsa «En directo» para volver a la posición actual.";
+        if (!view.participant()) return "Estás viendo la partida como espectador. No puedes mover piezas.";
+        if (view.room().status().equals("WAITING")) return "Espera a que otro jugador se una a la sala.";
+        if (!view.room().status().equals("ACTIVE")) return "La partida ha terminado. Puedes consultar su historial.";
+        return "No puedes mover con el turno actual. Espera tu turno o actualiza la sala.";
     }
 
     private String selectedRoomId() { return invitation.getText().strip(); }
@@ -416,7 +430,10 @@ public final class ChessPanel extends JPanel {
     private void notice(String text, boolean error) { message.setForeground(error ? new Color(155, 49, 43) : INK); message.setText(text); }
     private String subtitle(RoomView room) {
         String role = view.participant() ? "Juegas con " + (view.color().equals("White") ? "blancas" : "negras") : "Modo espectador";
-        String turn = view.fen().split(" ").length > 1 && view.fen().split(" ")[1].equals("b") ? "negras" : "blancas";
+        String[] fields = view.fen().strip().split("\\s+");
+        if (fields.length < 2 || !(fields[1].equals("w") || fields[1].equals("b")))
+            return role + " · Turno no disponible";
+        String turn = fields[1].equals("b") ? "negras" : "blancas";
         return role + " · " + (view.live() ? "Turno de " : "Posición: turno de ") + turn;
     }
     private static String status(String state) {

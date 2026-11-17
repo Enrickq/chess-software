@@ -113,6 +113,76 @@ class SwingPresentationTest {
         }
     }
 
+    @Test void opponentsTurnDisablesMovementButRefreshRestoresOwnTurnControlsOnEdt() throws Exception {
+        RoomView opponentsTurn = new RoomView("room-one", "Ana", "Luis", "ACTIVE",
+                ChessController.INITIAL_FEN.replace(" w ", " b "), 2, "2026-10-17T10:00:00Z", List.of());
+        RoomView ownTurn = new RoomView("room-one", "Ana", "Luis", "ACTIVE",
+                ChessController.INITIAL_FEN, 3, "2026-10-17T10:00:00Z", List.of());
+        CompletableFuture<RoomView> response = new CompletableFuture<>();
+        ChessService service = new NoNetworkService() {
+            @Override public CompletableFuture<SessionView> create(String player) {
+                return CompletableFuture.completedFuture(new SessionView(opponentsTurn, "private-token", "White"));
+            }
+            @Override public CompletableFuture<List<RoomView>> rooms() {
+                return CompletableFuture.completedFuture(List.of(opponentsTurn));
+            }
+            @Override public CompletableFuture<RoomView> room(String id) { return response; }
+        };
+        ChessController controller = new ChessController(service);
+        controller.create("Ana").orTimeout(5, TimeUnit.SECONDS).join();
+        AtomicReference<ChessPanel> panel = new AtomicReference<>();
+        AtomicReference<JButton> move = new AtomicReference<>();
+        AtomicReference<JButton> resign = new AtomicReference<>();
+        AtomicReference<JTextField> origin = new AtomicReference<>();
+        AtomicReference<JTextField> destination = new AtomicReference<>();
+        AtomicBoolean enabledOnEdt = new AtomicBoolean();
+        CountDownLatch movementEnabled = new CountDownLatch(1);
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                panel.set(new ChessPanel(controller));
+                move.set(findButton(panel.get(), "Mover"));
+                resign.set(findButton(panel.get(), "Abandonar partida"));
+                origin.set(findField(panel.get(), "Casilla de origen, por ejemplo e2"));
+                destination.set(findField(panel.get(), "Casilla de destino, por ejemplo e4"));
+                assertNotNull(move.get());
+                assertNotNull(resign.get());
+                assertNotNull(origin.get());
+                assertNotNull(destination.get());
+                assertFalse(move.get().isEnabled());
+                assertFalse(origin.get().isEnabled());
+                assertFalse(destination.get().isEnabled());
+                assertTrue(resign.get().isEnabled(), "A player may resign during the opponent's turn.");
+                move.get().addPropertyChangeListener("enabled", event -> {
+                    if (Boolean.TRUE.equals(event.getNewValue())) {
+                        enabledOnEdt.set(SwingUtilities.isEventDispatchThread());
+                        movementEnabled.countDown();
+                    }
+                });
+                JButton refresh = findButton(panel.get(), "Actualizar salas");
+                assertNotNull(refresh);
+                refresh.doClick(0);
+                assertFalse(move.get().isEnabled());
+                assertFalse(origin.get().isEnabled());
+                assertFalse(destination.get().isEnabled());
+                assertFalse(resign.get().isEnabled(), "While refreshing, actions remain serialized.");
+            });
+            assertFalse(response.isDone());
+            assertEquals(1, movementEnabled.getCount());
+            response.complete(ownTurn);
+            assertTrue(movementEnabled.await(5, TimeUnit.SECONDS), "The new turn should enable movement after refresh.");
+            SwingUtilities.invokeAndWait(() -> {
+                assertTrue(move.get().isEnabled());
+                assertTrue(origin.get().isEnabled());
+                assertTrue(destination.get().isEnabled());
+                assertTrue(resign.get().isEnabled());
+            });
+            assertTrue(enabledOnEdt.get(), "Completion on the test thread must publish Swing controls on the EDT.");
+        } finally {
+            response.complete(ownTurn);
+            if (panel.get() != null) SwingUtilities.invokeAndWait(() -> panel.get().stopPolling());
+        }
+    }
+
     private void click(BoardPanel board, int x, int y) {
         board.dispatchEvent(new MouseEvent(board, MouseEvent.MOUSE_CLICKED, System.currentTimeMillis(), 0, x, y, 1, false));
     }
@@ -126,6 +196,16 @@ class SwingPresentationTest {
             if (component instanceof JButton button && text.equals(button.getText())) return button;
             if (component instanceof Container child) {
                 JButton found = findButton(child, text);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+    private JTextField findField(Container container, String tooltip) {
+        for (Component component : container.getComponents()) {
+            if (component instanceof JTextField field && tooltip.equals(field.getToolTipText())) return field;
+            if (component instanceof Container child) {
+                JTextField found = findField(child, tooltip);
                 if (found != null) return found;
             }
         }
