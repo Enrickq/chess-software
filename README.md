@@ -43,7 +43,8 @@ EndToEndTest incorpora un recorrido automatizado de salas, movimientos, históri
 HTTP local y archivos reales. Las vistas Swing de esos estados se renderizan sin abrir ventanas interactivas.
 La sesión 12 mantiene la asincronía HTTP mediante CompletableFuture hasta la publicación del estado y su consumo
 en la interfaz; el recorrido manual y sus resultados se documentan por separado. La sesión 13 condiciona los controles
-de movimiento al turno propio y conserva el abandono durante el turno rival.
+de movimiento al turno propio y conserva el abandono durante el turno rival. La sesión 14 permite copiar el FEN
+de la posición visible y girar el tablero desde el directo o el histórico.
 
 ## Serialización FEN
 
@@ -479,14 +480,29 @@ mantienen sus responsabilidades.
 | ChessPanel | Presenta salas, jugadores, mensajes e histórico; conecta las acciones con ChessController y consume sus futuros en el hilo de Swing. |
 | FrontendMain | Lee --server, compone controlador y adaptador HTTP, crea la ventana e inicia la actualización periódica. |
 
-BoardPanel permite mostrar el tablero desde blancas o negras. ChessPanel elige la orientación de negras para el
-jugador de ese color; un espectador utiliza la orientación de blancas. Las reglas se siguen validando en el backend.
+BoardPanel permite mostrar el tablero desde blancas o negras. La orientación inicial corresponde al color del
+jugador, y el espectador empieza con la perspectiva de blancas. Las reglas se siguen validando en el backend.
 La interfaz permite crear una sala, unirse por código o selección, copiar el código, observar una partida, mover
 con clics o con los campos de origen y destino, elegir la promoción y abandonar tras confirmación.
 
 El histórico puede recorrerse mediante su lista, el deslizador y los botones de posición anterior o siguiente.
 En directo devuelve a la última posición conocida y permite volver a jugar. La reproducción es local: no modifica
 el histórico ni detiene la partida de los otros jugadores.
+
+### FEN visible y orientación
+
+Con una sala abierta, **Copiar FEN** escribe en el portapapeles el valor de `ChessController.View.fen()` que
+muestra el tablero. En directo corresponde a la última posición recibida. En el histórico corresponde a la
+posición seleccionada, incluida la inicial. El código de invitación se copia con **Copiar código**.
+
+**Girar tablero** invierte en esa ventana la orientación que corresponde al jugador o al espectador. La elección
+se mantiene durante las actualizaciones y al pasar del histórico al directo hasta volver a pulsar el botón
+o cerrar la ventana. `BoardPanel` usa la misma transformación para dibujar las piezas y traducir los clics a
+casillas. La partida, el turno, los permisos y la posición histórica seleccionada se conservan al girar.
+
+Ambos controles se aplican a la vista local. Mientras hay una consulta pendiente se deshabilitan hasta que
+el panel recibe la siguiente vista. El constructor habitual utiliza el portapapeles del sistema y la prueba
+puede suministrar un destino de texto para comprobar la copia sin depender del escritorio.
 
 ### Asincronía y actualización de la vista
 
@@ -715,10 +731,11 @@ Verificaciones locales:
 - Sesión 11, 12 de noviembre de 2026: 83 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 12, 14 de noviembre de 2026: 85 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 13, 17 de noviembre de 2026: 88 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 14, 19 de noviembre de 2026: 89 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
 FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 12; HttpChessServiceTest, 6;
-SwingPresentationTest, 4; EndToEndTest, 1.
+SwingPresentationTest, 5; EndToEndTest, 1.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -762,13 +779,16 @@ dos controladores al backend con FileRoomRepository, mueve con ambos colores y c
 se detiene el servidor. No abre Swing ni lanza clientes en procesos independientes. Las esperas se limitan al hilo
 de JUnit y tienen un límite temporal; estas pruebas no fuerzan el vencimiento de los timeouts configurados del cliente.
 
-SwingPresentationTest contiene cuatro casos: correspondencia de clics y casillas en ambas orientaciones,
+SwingPresentationTest contiene cinco casos: correspondencia de clics y casillas en ambas orientaciones,
 construcción y dibujo en memoria sin llamadas de servicio, comportamiento con un futuro pendiente y permisos
-por turno. Se comprueba que iniciar una consulta no espera su respuesta, que el hilo gráfico sigue respondiendo
-y que los controles se habilitan en Swing después de completarla. El nuevo caso mantiene Mover, Origen y Destino
+por turno, y copia y giro de la vista. Se comprueba que iniciar una consulta no espera su respuesta, que el hilo gráfico sigue respondiendo
+y que los controles se habilitan en Swing después de completarla. El caso de turnos mantiene Mover, Origen y Destino
 deshabilitados durante el turno rival y permite Abandonar partida; durante refresh también bloquea el abandono
 y, al recibir el turno propio, habilita el movimiento en el hilo de eventos. La imagen en memoria de esta suite
 no es una captura manual ni un archivo exportado. No hay una prueba automática de los diálogos modales.
+
+El caso de copia y giro pulsa los controles en directo y en el histórico, comprueba el FEN recibido por
+un destino de prueba y verifica la correspondencia de los clics tras recargar la vista y volver a directo.
 
 El caso de EndToEndTest comprueba el recorrido integrado de sala, cuatro movimientos, espectador, posiciones
 históricas, recuperación del repositorio y desconexión descrito en su sección. Además puede exportar las tres
@@ -793,8 +813,8 @@ una sesión de escritorio ni la recuperación de credenciales de jugador tras ce
 - feature/11-integration-evidence: prueba integrada, vistas renderizadas y verificación en GitHub Actions.
 - feature/12-manual-verification: adaptación asíncrona, recorrido manual y cierre del sistema integrado.
 - feature/13-turn-controls: permisos por turno para mover y permiso independiente para abandonar.
+- feature/14-fen-orientation: copia del FEN visible y giro del tablero.
 
 ## Próximas etapas
 
-Sesión 14, prevista para el 19 de noviembre de 2026: copiar el FEN visible y controlar la orientación del tablero.
-Los cambios posteriores se comprobarán sobre el sistema integrado y se adaptarán al material de las próximas clases.
+La próxima etapa revisará el material de clase disponible y comprobará la mejora elegida sobre el sistema integrado.

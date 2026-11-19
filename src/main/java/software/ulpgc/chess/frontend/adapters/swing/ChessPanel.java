@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /** Swing input adapter. Construction and loadView are offline and can be rendered headlessly. */
@@ -21,6 +22,7 @@ public final class ChessPanel extends JPanel {
     private static final Color TEAL = new Color(27, 112, 103);
     private static final Color MUTED = new Color(93, 109, 115);
     private final ChessController controller;
+    private final Consumer<String> clipboard;
     private final BoardPanel board = new BoardPanel();
     private final JTextField player = new JTextField(14);
     private final JTextField invitation = new JTextField(14);
@@ -50,15 +52,24 @@ public final class ChessPanel extends JPanel {
     private final JButton previous = button("←", false);
     private final JButton next = button("→", false);
     private final JButton live = button("En directo", true);
+    private final JButton copyFen = button("Copiar FEN", false);
+    private final JButton flipBoard = button("Girar tablero", false);
     private final Timer timer;
     private boolean busy;
     private boolean dialogOpen;
     private boolean updating;
+    private boolean flipped;
     private String selected;
     private ChessController.View view;
 
     public ChessPanel(ChessController controller) {
+        this(controller, text -> Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new StringSelection(text), null));
+    }
+
+    public ChessPanel(ChessController controller, Consumer<String> clipboard) {
         this.controller = controller;
+        this.clipboard = Objects.requireNonNull(clipboard);
         setLayout(new BorderLayout(0, 0));
         setBackground(new Color(246, 248, 248));
         setPreferredSize(new Dimension(1180, 790));
@@ -121,10 +132,15 @@ public final class ChessPanel extends JPanel {
                         + (item.promotion().isBlank() ? "" : " = " + item.promotion().toUpperCase()) + "   · " + item.player());
             history.setSelectedIndex(view.index());
             history.ensureIndexIsVisible(view.index());
-            MoveView last = room == null || view.index() == 0 ? null : room.moves().get(view.index() - 1);
-            board.display(view.fen(), view.color().equals("Black"), last == null ? null : last.from(), last == null ? null : last.to());
+            renderBoard();
             updateEnabled();
         } finally { updating = false; }
+    }
+
+    private void renderBoard() {
+        MoveView last = view.index() == 0 ? null : view.room().moves().get(view.index() - 1);
+        boolean reversed = view.color().equals("Black") != flipped;
+        board.display(view.fen(), reversed, last == null ? null : last.from(), last == null ? null : last.to());
     }
 
     /** Supplies factual context when presenting a snapshot loaded outside the interactive window. */
@@ -246,6 +262,16 @@ public final class ChessPanel extends JPanel {
         navigation.add(next);
         navigation.add(live);
         panel.add(navigation);
+        panel.add(Box.createVerticalStrut(6));
+        JPanel viewControls = new JPanel(new GridLayout(1, 2, 5, 0));
+        viewControls.setOpaque(false);
+        viewControls.setMaximumSize(new Dimension(Integer.MAX_VALUE, 33));
+        viewControls.setAlignmentX(LEFT_ALIGNMENT);
+        copyFen.setToolTipText("Copia la posición que estás viendo, también desde el historial");
+        flipBoard.setToolTipText("Cambia la orientación en esta ventana");
+        viewControls.add(copyFen);
+        viewControls.add(flipBoard);
+        panel.add(viewControls);
         panel.add(Box.createVerticalStrut(10));
         history.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
         history.setFixedCellHeight(29);
@@ -292,9 +318,21 @@ public final class ChessPanel extends JPanel {
         refresh.addActionListener(e -> execute(() -> controller.listRooms().thenCompose(ignored -> controller.refresh()), "Salas actualizadas."));
         copy.addActionListener(e -> {
             try {
-                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(roomCode.getText()), null);
+                clipboard.accept(roomCode.getText());
                 notice("Código copiado. Compártelo con tu rival.", false);
             } catch (RuntimeException ex) { notice("No se pudo copiar. Selecciona el código y cópialo manualmente.", true); }
+        });
+        copyFen.addActionListener(e -> {
+            try {
+                clipboard.accept(view.fen());
+                notice("FEN de la posición visible copiado.", false);
+            } catch (RuntimeException ex) {
+                notice("No se pudo copiar el FEN. Vuelve a intentarlo.", true);
+            }
+        });
+        flipBoard.addActionListener(e -> {
+            flipped = !flipped;
+            renderBoard();
         });
         board.onSquare(this::selectSquare);
         move.addActionListener(e -> submitMove(origin.getText().strip().toLowerCase(), destination.getText().strip().toLowerCase()));
@@ -405,6 +443,8 @@ public final class ChessPanel extends JPanel {
         for (JComponent component : List.of(create, join, watch, refresh, roomList)) component.setEnabled(!busy);
         boolean hasRoom = view.room() != null;
         copy.setEnabled(hasRoom);
+        copyFen.setEnabled(!busy && hasRoom);
+        flipBoard.setEnabled(!busy && hasRoom);
         replay.setEnabled(!busy && hasRoom);
         history.setEnabled(!busy && hasRoom);
         previous.setEnabled(!busy && hasRoom && view.index() > 0);
