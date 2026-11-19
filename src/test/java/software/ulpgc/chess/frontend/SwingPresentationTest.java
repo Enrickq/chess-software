@@ -1,6 +1,7 @@
 package software.ulpgc.chess.frontend;
 
 import org.junit.jupiter.api.Test;
+import software.ulpgc.chess.contract.MoveView;
 import software.ulpgc.chess.contract.RoomView;
 import software.ulpgc.chess.contract.SessionView;
 import software.ulpgc.chess.domain.model.Piece;
@@ -181,6 +182,54 @@ class SwingPresentationTest {
             response.complete(ownTurn);
             if (panel.get() != null) SwingUtilities.invokeAndWait(() -> panel.get().stopPolling());
         }
+    }
+
+    @Test void copiesVisibleFenAndKeepsFlippedSquaresAfterReloadingView() throws Exception {
+        String afterMove = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+        String time = "2026-11-19T12:00:00Z";
+        RoomView game = new RoomView("room-one", "Ana", "Luis", "ACTIVE", afterMove, 2, time,
+                List.of(new MoveView(1, "e2", "e4", "", "Ana", afterMove, time)));
+        ChessController controller = new ChessController(new NoNetworkService() {
+            @Override public CompletableFuture<RoomView> room(String id) {
+                return CompletableFuture.completedFuture(game);
+            }
+        });
+        controller.watch(game.id()).get(5, TimeUnit.SECONDS);
+        AtomicReference<String> copied = new AtomicReference<>();
+        SwingUtilities.invokeAndWait(() -> {
+            ChessPanel panel = new ChessPanel(controller, copied::set);
+            JButton copyFen = findButton(panel, "Copiar FEN");
+            JButton flipBoard = findButton(panel, "Girar tablero");
+            BoardPanel board = panel.boardComponent();
+            board.setSize(560, 560);
+            AtomicReference<String> clicked = new AtomicReference<>();
+            board.onSquare(clicked::set);
+
+            copyFen.doClick(0);
+            assertEquals(afterMove, copied.get());
+            click(board, 56, 56);
+            assertEquals("a8", clicked.get());
+
+            findButton(panel, "←").doClick(0);
+            flipBoard.doClick(0);
+            panel.loadView();
+            copyFen.doClick(0);
+            assertEquals(ChessController.INITIAL_FEN, copied.get());
+            assertFalse(controller.view().live());
+            assertEquals(0, controller.view().index());
+            assertSame(game, controller.view().room());
+            click(board, 56, 56);
+            assertEquals("h1", clicked.get());
+
+            findButton(panel, "En directo").doClick(0);
+            copyFen.doClick(0);
+            assertEquals(afterMove, copied.get());
+            click(board, 56, 56);
+            assertEquals("h1", clicked.get());
+            flipBoard.doClick(0);
+            click(board, 56, 56);
+            assertEquals("a8", clicked.get());
+        });
     }
 
     private void click(BoardPanel board, int x, int y) {
