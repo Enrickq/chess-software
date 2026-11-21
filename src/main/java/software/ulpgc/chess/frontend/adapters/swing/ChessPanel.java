@@ -7,11 +7,15 @@ import software.ulpgc.chess.frontend.application.ChessController;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /** Swing input adapter. Construction and loadView are offline and can be rendered headlessly. */
@@ -20,9 +24,13 @@ public final class ChessPanel extends JPanel {
     private static final Color TEAL = new Color(27, 112, 103);
     private static final Color MUTED = new Color(93, 109, 115);
     private final ChessController controller;
+    private final Consumer<String> clipboard;
     private final BoardPanel board = new BoardPanel();
     private final JTextField player = new JTextField(14);
     private final JTextField invitation = new JTextField(14);
+    private final JTextField roomSearch = new JTextField(14);
+    private final JComboBox<RoomFilter.Status> roomStatus = new JComboBox<>(RoomFilter.Status.values());
+    private final JLabel roomResults = label("0 salas", 12, MUTED);
     private final JTextField roomCode = new JTextField();
     private final JTextField origin = new JTextField(3);
     private final JTextField destination = new JTextField(3);
@@ -49,15 +57,24 @@ public final class ChessPanel extends JPanel {
     private final JButton previous = button("←", false);
     private final JButton next = button("→", false);
     private final JButton live = button("En directo", true);
+    private final JButton copyFen = button("Copiar FEN", false);
+    private final JButton flipBoard = button("Girar tablero", false);
     private final Timer timer;
     private boolean busy;
     private boolean dialogOpen;
     private boolean updating;
+    private boolean flipped;
     private String selected;
     private ChessController.View view;
 
     public ChessPanel(ChessController controller) {
+        this(controller, text -> Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new StringSelection(text), null));
+    }
+
+    public ChessPanel(ChessController controller, Consumer<String> clipboard) {
         this.controller = controller;
+        this.clipboard = Objects.requireNonNull(clipboard);
         setLayout(new BorderLayout(0, 0));
         setBackground(new Color(246, 248, 248));
         setPreferredSize(new Dimension(1180, 790));
@@ -86,16 +103,12 @@ public final class ChessPanel extends JPanel {
         try {
             ChessController.View previousView = view;
             view = controller.view();
-            if (previousView != null && !previousView.fen().equals(view.fen())) clearSelection();
             RoomView room = view.room();
-            RoomView selectedRoom = roomList.getSelectedValue();
-            roomModel.clear();
-            for (RoomView item : controller.rooms())
-                roomModel.addElement(room != null && item.id().equals(room.id()) ? room : item);
-            if (room != null && controller.rooms().stream().noneMatch(item -> item.id().equals(room.id())))
-                roomModel.addElement(room);
-            if (selectedRoom != null) for (int i = 0; i < roomModel.size(); i++)
-                if (roomModel.get(i).id().equals(selectedRoom.id())) roomList.setSelectedIndex(i);
+            boolean roomChanged = previousView != null && !Objects.equals(
+                    previousView.room() == null ? null : previousView.room().id(), room == null ? null : room.id());
+            if (!view.canPlay() || roomChanged
+                    || (previousView != null && !Objects.equals(previousView.fen(), view.fen()))) clearSelection();
+            updateRoomList();
             title.setText(room == null ? "Empieza una partida" : view.live() ? "Tablero en directo" : "Explora la partida");
             phase.setText(room == null ? "SIN SALA" : status(room.status()).toUpperCase());
             subtitle.setText(room == null ? "Crea una sala o entra con su código." : subtitle(room));
@@ -117,10 +130,51 @@ public final class ChessPanel extends JPanel {
                         + (item.promotion().isBlank() ? "" : " = " + item.promotion().toUpperCase()) + "   · " + item.player());
             history.setSelectedIndex(view.index());
             history.ensureIndexIsVisible(view.index());
-            MoveView last = room == null || view.index() == 0 ? null : room.moves().get(view.index() - 1);
-            board.display(view.fen(), view.color().equals("Black"), last == null ? null : last.from(), last == null ? null : last.to());
+            renderBoard();
             updateEnabled();
         } finally { updating = false; }
+    }
+
+    private void updateRoomList() {
+        RoomFilter filter = new RoomFilter(roomSearch.getText(), roomStatus.getItemAt(roomStatus.getSelectedIndex()));
+        RoomView selectedRoom = roomList.getSelectedValue();
+        RoomView currentRoom = view.room();
+        List<RoomView> rooms = controller.rooms();
+        boolean wasUpdating = updating;
+        updating = true;
+        try {
+            roomModel.clear();
+            for (RoomView room : rooms) {
+                RoomView entry = currentRoom != null && currentRoom.id().equals(room.id()) ? currentRoom : room;
+                if (filter.matches(entry)) roomModel.addElement(entry);
+            }
+            if (currentRoom != null && rooms.stream().noneMatch(room -> room.id().equals(currentRoom.id()))
+                    && filter.matches(currentRoom)) {
+                roomModel.addElement(currentRoom);
+            }
+            if (selectedRoom != null) {
+                for (int index = 0; index < roomModel.size(); index++) {
+                    if (roomModel.get(index).id().equals(selectedRoom.id())) {
+                        roomList.setSelectedIndex(index);
+                        break;
+                    }
+                }
+            }
+            int matches = roomModel.getSize();
+            roomResults.setText(switch (matches) {
+                case 0 -> "Sin resultados";
+                case 1 -> "1 sala";
+                default -> matches + " salas";
+            });
+        } finally {
+            updating = wasUpdating;
+        }
+    }
+
+    private void renderBoard() {
+        MoveView last = view.index() == 0 ? null : view.room().moves().get(view.index() - 1);
+        boolean reversed = view.color().equals("Black") != flipped;
+        board.display(view.fen(), reversed, last == null ? null : last.from(), last == null ? null : last.to());
     }
 
     /** Supplies factual context when presenting a snapshot loaded outside the interactive window. */
@@ -168,8 +222,20 @@ public final class ChessPanel extends JPanel {
         choices.setAlignmentX(LEFT_ALIGNMENT);
         panel.add(choices);
         panel.add(Box.createVerticalStrut(23));
-        panel.add(label("SALAS E HISTÓRICO", 12, TEAL));
-        panel.add(Box.createVerticalStrut(9));
+        JLabel searchLabel = label("Buscar salas", 13, INK);
+        searchLabel.setLabelFor(roomSearch);
+        panel.add(searchLabel);
+        roomSearch.setToolTipText("Busca por nombre de jugador o código");
+        field(panel, roomSearch);
+        roomStatus.setName("roomStatus");
+        roomStatus.getAccessibleContext().setAccessibleName("Estado de la sala");
+        roomStatus.setAlignmentX(LEFT_ALIGNMENT);
+        roomStatus.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
+        panel.add(roomStatus);
+        panel.add(Box.createVerticalStrut(6));
+        panel.add(roomResults);
+        panel.add(Box.createVerticalStrut(6));
+        roomList.setName("roomList");
         roomList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         roomList.setFixedCellHeight(70);
         roomList.setCellRenderer(new RoomRenderer());
@@ -242,6 +308,16 @@ public final class ChessPanel extends JPanel {
         navigation.add(next);
         navigation.add(live);
         panel.add(navigation);
+        panel.add(Box.createVerticalStrut(6));
+        JPanel viewControls = new JPanel(new GridLayout(1, 2, 5, 0));
+        viewControls.setOpaque(false);
+        viewControls.setMaximumSize(new Dimension(Integer.MAX_VALUE, 33));
+        viewControls.setAlignmentX(LEFT_ALIGNMENT);
+        copyFen.setToolTipText("Copia la posición que estás viendo, también desde el historial");
+        flipBoard.setToolTipText("Cambia la orientación en esta ventana");
+        viewControls.add(copyFen);
+        viewControls.add(flipBoard);
+        panel.add(viewControls);
         panel.add(Box.createVerticalStrut(10));
         history.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 13));
         history.setFixedCellHeight(29);
@@ -286,11 +362,29 @@ public final class ChessPanel extends JPanel {
             execute(() -> controller.watch(id), "Sala abierta. Usa el historial para recorrer la partida.");
         });
         refresh.addActionListener(e -> execute(() -> controller.listRooms().thenCompose(ignored -> controller.refresh()), "Salas actualizadas."));
+        roomSearch.getDocument().addDocumentListener(new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent e) { applyFilters(); }
+            @Override public void removeUpdate(DocumentEvent e) { applyFilters(); }
+            @Override public void changedUpdate(DocumentEvent e) { applyFilters(); }
+        });
+        roomStatus.addActionListener(e -> applyFilters());
         copy.addActionListener(e -> {
             try {
-                Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(roomCode.getText()), null);
+                clipboard.accept(roomCode.getText());
                 notice("Código copiado. Compártelo con tu rival.", false);
             } catch (RuntimeException ex) { notice("No se pudo copiar. Selecciona el código y cópialo manualmente.", true); }
+        });
+        copyFen.addActionListener(e -> {
+            try {
+                clipboard.accept(view.fen());
+                notice("FEN de la posición visible copiado.", false);
+            } catch (RuntimeException ex) {
+                notice("No se pudo copiar el FEN. Vuelve a intentarlo.", true);
+            }
+        });
+        flipBoard.addActionListener(e -> {
+            flipped = !flipped;
+            renderBoard();
         });
         board.onSquare(this::selectSquare);
         move.addActionListener(e -> submitMove(origin.getText().strip().toLowerCase(), destination.getText().strip().toLowerCase()));
@@ -323,7 +417,7 @@ public final class ChessPanel extends JPanel {
 
     private void selectSquare(String square) {
         if (busy) return;
-        if (!view.canPlay()) { notice(view.live() ? "Espera a tu rival o entra como jugador para mover." : "Pulsa «En directo» para volver a jugar.", false); return; }
+        if (!view.canPlay()) { notice(moveUnavailableMessage(), false); return; }
         Piece piece = board.pieceAt(square);
         boolean own = piece != null && piece.isWhite() == view.color().equals("White");
         if (selected == null || own) {
@@ -341,6 +435,7 @@ public final class ChessPanel extends JPanel {
 
     private void submitMove(String from, String to) {
         if (busy) return;
+        if (!view.canPlay()) { notice(moveUnavailableMessage(), false); return; }
         if (!from.matches("[a-h][1-8]") || !to.matches("[a-h][1-8]")) {
             notice("Escribe dos casillas válidas, por ejemplo e2 y e4.", true);
             return;
@@ -397,18 +492,35 @@ public final class ChessPanel extends JPanel {
 
     private void updateEnabled() {
         if (view == null) return;
-        for (JComponent component : List.of(create, join, watch, refresh, roomList)) component.setEnabled(!busy);
+        for (JComponent component : List.of(create, join, watch, refresh, roomList, roomSearch, roomStatus)) {
+            component.setEnabled(!busy);
+        }
         boolean hasRoom = view.room() != null;
         copy.setEnabled(hasRoom);
+        copyFen.setEnabled(!busy && hasRoom);
+        flipBoard.setEnabled(!busy && hasRoom);
         replay.setEnabled(!busy && hasRoom);
         history.setEnabled(!busy && hasRoom);
         previous.setEnabled(!busy && hasRoom && view.index() > 0);
         next.setEnabled(!busy && hasRoom && view.index() < view.room().moves().size());
         live.setEnabled(!busy && hasRoom && !view.live());
         move.setEnabled(!busy && view.canPlay());
-        origin.setEnabled(view.canPlay());
-        destination.setEnabled(view.canPlay());
-        resign.setEnabled(!busy && view.canPlay());
+        origin.setEnabled(!busy && view.canPlay());
+        destination.setEnabled(!busy && view.canPlay());
+        resign.setEnabled(!busy && view.canResign());
+    }
+
+    private void applyFilters() {
+        if (!busy && !updating) updateRoomList();
+    }
+
+    private String moveUnavailableMessage() {
+        if (view.room() == null) return "Primero crea una sala o únete a una partida.";
+        if (!view.live()) return "Estás revisando el historial. Pulsa «En directo» para volver a la posición actual.";
+        if (!view.participant()) return "Estás viendo la partida como espectador. No puedes mover piezas.";
+        if (view.room().status().equals("WAITING")) return "Espera a que otro jugador se una a la sala.";
+        if (!view.room().status().equals("ACTIVE")) return "La partida ha terminado. Puedes consultar su historial.";
+        return "No puedes mover con el turno actual. Espera tu turno o actualiza la sala.";
     }
 
     private String selectedRoomId() { return invitation.getText().strip(); }
@@ -416,7 +528,10 @@ public final class ChessPanel extends JPanel {
     private void notice(String text, boolean error) { message.setForeground(error ? new Color(155, 49, 43) : INK); message.setText(text); }
     private String subtitle(RoomView room) {
         String role = view.participant() ? "Juegas con " + (view.color().equals("White") ? "blancas" : "negras") : "Modo espectador";
-        String turn = view.fen().split(" ").length > 1 && view.fen().split(" ")[1].equals("b") ? "negras" : "blancas";
+        String[] fields = view.fen().strip().split("\\s+");
+        if (fields.length < 2 || !(fields[1].equals("w") || fields[1].equals("b")))
+            return role + " · Turno no disponible";
+        String turn = fields[1].equals("b") ? "negras" : "blancas";
         return role + " · " + (view.live() ? "Turno de " : "Posición: turno de ") + turn;
     }
     private static String status(String state) {
