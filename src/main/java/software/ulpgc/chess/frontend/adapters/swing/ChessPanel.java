@@ -7,6 +7,8 @@ import software.ulpgc.chess.frontend.application.ChessController;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.util.List;
@@ -26,6 +28,9 @@ public final class ChessPanel extends JPanel {
     private final BoardPanel board = new BoardPanel();
     private final JTextField player = new JTextField(14);
     private final JTextField invitation = new JTextField(14);
+    private final JTextField roomSearch = new JTextField(14);
+    private final JComboBox<RoomFilter.Status> roomStatus = new JComboBox<>(RoomFilter.Status.values());
+    private final JLabel roomResults = label("0 salas", 12, MUTED);
     private final JTextField roomCode = new JTextField();
     private final JTextField origin = new JTextField(3);
     private final JTextField destination = new JTextField(3);
@@ -103,14 +108,7 @@ public final class ChessPanel extends JPanel {
                     previousView.room() == null ? null : previousView.room().id(), room == null ? null : room.id());
             if (!view.canPlay() || roomChanged
                     || (previousView != null && !Objects.equals(previousView.fen(), view.fen()))) clearSelection();
-            RoomView selectedRoom = roomList.getSelectedValue();
-            roomModel.clear();
-            for (RoomView item : controller.rooms())
-                roomModel.addElement(room != null && item.id().equals(room.id()) ? room : item);
-            if (room != null && controller.rooms().stream().noneMatch(item -> item.id().equals(room.id())))
-                roomModel.addElement(room);
-            if (selectedRoom != null) for (int i = 0; i < roomModel.size(); i++)
-                if (roomModel.get(i).id().equals(selectedRoom.id())) roomList.setSelectedIndex(i);
+            updateRoomList();
             title.setText(room == null ? "Empieza una partida" : view.live() ? "Tablero en directo" : "Explora la partida");
             phase.setText(room == null ? "SIN SALA" : status(room.status()).toUpperCase());
             subtitle.setText(room == null ? "Crea una sala o entra con su código." : subtitle(room));
@@ -135,6 +133,42 @@ public final class ChessPanel extends JPanel {
             renderBoard();
             updateEnabled();
         } finally { updating = false; }
+    }
+
+    private void updateRoomList() {
+        RoomFilter filter = new RoomFilter(roomSearch.getText(), roomStatus.getItemAt(roomStatus.getSelectedIndex()));
+        RoomView selectedRoom = roomList.getSelectedValue();
+        RoomView currentRoom = view.room();
+        List<RoomView> rooms = controller.rooms();
+        boolean wasUpdating = updating;
+        updating = true;
+        try {
+            roomModel.clear();
+            for (RoomView room : rooms) {
+                RoomView entry = currentRoom != null && currentRoom.id().equals(room.id()) ? currentRoom : room;
+                if (filter.matches(entry)) roomModel.addElement(entry);
+            }
+            if (currentRoom != null && rooms.stream().noneMatch(room -> room.id().equals(currentRoom.id()))
+                    && filter.matches(currentRoom)) {
+                roomModel.addElement(currentRoom);
+            }
+            if (selectedRoom != null) {
+                for (int index = 0; index < roomModel.size(); index++) {
+                    if (roomModel.get(index).id().equals(selectedRoom.id())) {
+                        roomList.setSelectedIndex(index);
+                        break;
+                    }
+                }
+            }
+            int matches = roomModel.getSize();
+            roomResults.setText(switch (matches) {
+                case 0 -> "Sin resultados";
+                case 1 -> "1 sala";
+                default -> matches + " salas";
+            });
+        } finally {
+            updating = wasUpdating;
+        }
     }
 
     private void renderBoard() {
@@ -188,8 +222,20 @@ public final class ChessPanel extends JPanel {
         choices.setAlignmentX(LEFT_ALIGNMENT);
         panel.add(choices);
         panel.add(Box.createVerticalStrut(23));
-        panel.add(label("SALAS E HISTÓRICO", 12, TEAL));
-        panel.add(Box.createVerticalStrut(9));
+        JLabel searchLabel = label("Buscar salas", 13, INK);
+        searchLabel.setLabelFor(roomSearch);
+        panel.add(searchLabel);
+        roomSearch.setToolTipText("Busca por nombre de jugador o código");
+        field(panel, roomSearch);
+        roomStatus.setName("roomStatus");
+        roomStatus.getAccessibleContext().setAccessibleName("Estado de la sala");
+        roomStatus.setAlignmentX(LEFT_ALIGNMENT);
+        roomStatus.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
+        panel.add(roomStatus);
+        panel.add(Box.createVerticalStrut(6));
+        panel.add(roomResults);
+        panel.add(Box.createVerticalStrut(6));
+        roomList.setName("roomList");
         roomList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         roomList.setFixedCellHeight(70);
         roomList.setCellRenderer(new RoomRenderer());
@@ -316,6 +362,12 @@ public final class ChessPanel extends JPanel {
             execute(() -> controller.watch(id), "Sala abierta. Usa el historial para recorrer la partida.");
         });
         refresh.addActionListener(e -> execute(() -> controller.listRooms().thenCompose(ignored -> controller.refresh()), "Salas actualizadas."));
+        roomSearch.getDocument().addDocumentListener(new DocumentListener() {
+            @Override public void insertUpdate(DocumentEvent e) { applyFilters(); }
+            @Override public void removeUpdate(DocumentEvent e) { applyFilters(); }
+            @Override public void changedUpdate(DocumentEvent e) { applyFilters(); }
+        });
+        roomStatus.addActionListener(e -> applyFilters());
         copy.addActionListener(e -> {
             try {
                 clipboard.accept(roomCode.getText());
@@ -440,7 +492,9 @@ public final class ChessPanel extends JPanel {
 
     private void updateEnabled() {
         if (view == null) return;
-        for (JComponent component : List.of(create, join, watch, refresh, roomList)) component.setEnabled(!busy);
+        for (JComponent component : List.of(create, join, watch, refresh, roomList, roomSearch, roomStatus)) {
+            component.setEnabled(!busy);
+        }
         boolean hasRoom = view.room() != null;
         copy.setEnabled(hasRoom);
         copyFen.setEnabled(!busy && hasRoom);
@@ -454,6 +508,10 @@ public final class ChessPanel extends JPanel {
         origin.setEnabled(!busy && view.canPlay());
         destination.setEnabled(!busy && view.canPlay());
         resign.setEnabled(!busy && view.canResign());
+    }
+
+    private void applyFilters() {
+        if (!busy && !updating) updateRoomList();
     }
 
     private String moveUnavailableMessage() {
