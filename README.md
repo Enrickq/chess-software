@@ -44,7 +44,8 @@ HTTP local y archivos reales. Las vistas Swing de esos estados se renderizan sin
 La sesión 12 mantiene la asincronía HTTP mediante CompletableFuture hasta la publicación del estado y su consumo
 en la interfaz; el recorrido manual y sus resultados se documentan por separado. La sesión 13 condiciona los controles
 de movimiento al turno propio y conserva el abandono durante el turno rival. La sesión 14 permite copiar el FEN
-de la posición visible y girar el tablero desde el directo o el histórico.
+de la posición visible y girar el tablero desde el directo o el histórico. La sesión 15 añade búsqueda
+por nombre de jugador o código de sala y un filtro por estado.
 
 ## Serialización FEN
 
@@ -489,6 +490,17 @@ El histórico puede recorrerse mediante su lista, el deslizador y los botones de
 En directo devuelve a la última posición conocida y permite volver a jugar. La reproducción es local: no modifica
 el histórico ni detiene la partida de los otros jugadores.
 
+### Búsqueda de salas
+
+**Buscar salas** acepta parte del código de la sala o del nombre de cualquiera de los dos jugadores.
+La búsqueda ignora las mayúsculas y las tildes. El selector combina esa búsqueda con **Todos los estados**,
+**Esperando rival**, **En juego** o **Terminadas**. Este último incluye tanto victorias de blancas como de negras.
+
+`RoomFilter` decide qué entradas del catálogo mostrar. La búsqueda se aplica en la ventana al catálogo
+que el controlador ya ha recibido. **Actualizar salas** obtiene el catálogo del servidor y vuelve a aplicar
+los criterios actuales. Si una sala seleccionada sigue visible, conserva su selección por código.
+La partida abierta y el código introducido en el campo de invitación se conservan al filtrar.
+
 ### FEN visible y orientación
 
 Con una sala abierta, **Copiar FEN** escribe en el portapapeles el valor de `ChessController.View.fen()` que
@@ -704,11 +716,11 @@ El tercer hito, `milestone-03-integrated-system`, agrupa la integración del sis
 del frontend y la verificación manual registrada. No modifica las etiquetas históricas de los dos primeros hitos.
 
 La sesión 12 separó la refactorización asíncrona y la documentación del recorrido manual en dos commits. El cierre
-quedó comprobado con 85 pruebas; main y milestone-03-integrated-system conservan el commit 6793786. El resultado
+quedó comprobado con 85 pruebas y la etiqueta `milestone-03-integrated-system` apunta al commit `6793786`. El resultado
 manual de esa etapa se consulta en su registro.
 
-Los cambios de la sesión 13 se agrupan en feature/13-turn-controls para su integración en develop. Esta etapa
-conserva main y las etiquetas existentes. La etiqueta de entrega final se reserva para una etapa posterior.
+El cuarto hito, `milestone-04-desktop-improvements`, reúne los permisos de turno de la sesión 13,
+la copia del FEN y el giro del tablero de la sesión 14, y el filtrado del catálogo de salas de la sesión 15.
 
 ## Compilación y pruebas
 
@@ -732,10 +744,11 @@ Verificaciones locales:
 - Sesión 12, 14 de noviembre de 2026: 85 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 13, 17 de noviembre de 2026: 88 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 14, 19 de noviembre de 2026: 89 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 15, 20 de noviembre de 2026: 90 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
 FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 12; HttpChessServiceTest, 6;
-SwingPresentationTest, 5; EndToEndTest, 1.
+SwingPresentationTest, 6; EndToEndTest, 1.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -779,9 +792,9 @@ dos controladores al backend con FileRoomRepository, mueve con ambos colores y c
 se detiene el servidor. No abre Swing ni lanza clientes en procesos independientes. Las esperas se limitan al hilo
 de JUnit y tienen un límite temporal; estas pruebas no fuerzan el vencimiento de los timeouts configurados del cliente.
 
-SwingPresentationTest contiene cinco casos: correspondencia de clics y casillas en ambas orientaciones,
+SwingPresentationTest contiene seis casos: correspondencia de clics y casillas en ambas orientaciones,
 construcción y dibujo en memoria sin llamadas de servicio, comportamiento con un futuro pendiente y permisos
-por turno, y copia y giro de la vista. Se comprueba que iniciar una consulta no espera su respuesta, que el hilo gráfico sigue respondiendo
+por turno, copia y giro de la vista, y filtrado de salas. Se comprueba que iniciar una consulta no espera su respuesta, que el hilo gráfico sigue respondiendo
 y que los controles se habilitan en Swing después de completarla. El caso de turnos mantiene Mover, Origen y Destino
 deshabilitados durante el turno rival y permite Abandonar partida; durante refresh también bloquea el abandono
 y, al recibir el turno propio, habilita el movimiento en el hilo de eventos. La imagen en memoria de esta suite
@@ -789,6 +802,9 @@ no es una captura manual ni un archivo exportado. No hay una prueba automática 
 
 El caso de copia y giro pulsa los controles en directo y en el histórico, comprueba el FEN recibido por
 un destino de prueba y verifica la correspondencia de los clics tras recargar la vista y volver a directo.
+
+El caso nuevo de catálogo combina nombre, código y estado con salas en memoria. Comprueba también que
+filtrar o recargar la lista conserva una selección visible, la partida abierta y el código de invitación escrito.
 
 El caso de EndToEndTest comprueba el recorrido integrado de sala, cuatro movimientos, espectador, posiciones
 históricas, recuperación del repositorio y desconexión descrito en su sección. Además puede exportar las tres
@@ -814,7 +830,8 @@ una sesión de escritorio ni la recuperación de credenciales de jugador tras ce
 - feature/12-manual-verification: adaptación asíncrona, recorrido manual y cierre del sistema integrado.
 - feature/13-turn-controls: permisos por turno para mover y permiso independiente para abandonar.
 - feature/14-fen-orientation: copia del FEN visible y giro del tablero.
+- feature/15-room-filters: búsqueda local de salas por nombre, código y estado.
 
 ## Próximas etapas
 
-La próxima etapa revisará el material de clase disponible y comprobará la mejora elegida sobre el sistema integrado.
+La próxima etapa abordará los conflictos de versión entre clientes y la actualización del estado tras un rechazo del servidor.

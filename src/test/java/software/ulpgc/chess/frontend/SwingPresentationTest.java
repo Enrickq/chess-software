@@ -232,6 +232,72 @@ class SwingPresentationTest {
         });
     }
 
+    @Test void filtersTheLoadedCatalogueWithoutChangingTheOpenRoomOrInvitation() throws Exception {
+        String time = "2026-11-20T12:00:00Z";
+        String initial = ChessController.INITIAL_FEN;
+        RoomView waiting = new RoomView("alpha-482", "Álvaro", "", "WAITING", initial, 0, time, List.of());
+        RoomView active = new RoomView("bravo-625", "Ana", "Álvaro", "ACTIVE", initial, 1, time, List.of());
+        RoomView finished = new RoomView("charlie-936", "Eva", "Luis", "BLACK_WON", initial, 2, time, List.of());
+        ChessController controller = new ChessController(new NoNetworkService() {
+            @Override public CompletableFuture<List<RoomView>> rooms() {
+                return CompletableFuture.completedFuture(List.of(waiting, active, finished));
+            }
+
+            @Override public CompletableFuture<RoomView> room(String id) {
+                assertEquals(active.id(), id);
+                return CompletableFuture.completedFuture(active);
+            }
+        });
+        controller.listRooms().get(5, TimeUnit.SECONDS);
+        controller.watch(active.id()).get(5, TimeUnit.SECONDS);
+
+        SwingUtilities.invokeAndWait(() -> {
+            ChessPanel panel = new ChessPanel(controller);
+            JTextField search = findField(panel, "Busca por nombre de jugador o código");
+            JTextField invitation = findField(panel, "Pega el código compartido o selecciona una sala de la lista");
+            JComboBox<?> states = (JComboBox<?>) findNamed(panel, "roomStatus");
+            JList<?> rooms = (JList<?>) findNamed(panel, "roomList");
+            assertEquals(3, rooms.getModel().getSize());
+
+            search.setText("  ALVARO  ");
+            assertEquals(2, rooms.getModel().getSize());
+            states.setSelectedIndex(1);
+            assertEquals(1, rooms.getModel().getSize());
+            assertEquals(waiting, rooms.getModel().getElementAt(0));
+            rooms.setSelectedIndex(0);
+            assertEquals(waiting.id(), invitation.getText());
+            invitation.setText("codigo-manual");
+            panel.loadView();
+            assertEquals(waiting, rooms.getSelectedValue());
+            assertEquals("codigo-manual", invitation.getText());
+
+            states.setSelectedIndex(2);
+            assertEquals(1, rooms.getModel().getSize());
+            assertEquals(active, rooms.getModel().getElementAt(0));
+            search.setText("625");
+            assertEquals(active, rooms.getModel().getElementAt(0));
+            states.setSelectedIndex(3);
+            assertEquals(0, rooms.getModel().getSize());
+            search.setText("");
+            assertEquals(1, rooms.getModel().getSize());
+            assertEquals(finished, rooms.getModel().getElementAt(0));
+            assertEquals("codigo-manual", invitation.getText());
+            assertEquals(active, controller.view().room());
+            assertTrue(controller.view().live());
+        });
+    }
+
+    private Component findNamed(Container container, String name) {
+        for (Component component : container.getComponents()) {
+            if (name.equals(component.getName())) return component;
+            if (component instanceof Container child) {
+                Component found = findNamed(child, name);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
     private void click(BoardPanel board, int x, int y) {
         board.dispatchEvent(new MouseEvent(board, MouseEvent.MOUSE_CLICKED, System.currentTimeMillis(), 0, x, y, 1, false));
     }
