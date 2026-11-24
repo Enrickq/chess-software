@@ -1,5 +1,6 @@
 package software.ulpgc.chess.frontend.application;
 
+import software.ulpgc.chess.contract.PresenceView.OpponentPresence;
 import software.ulpgc.chess.contract.RoomView;
 import software.ulpgc.chess.contract.SessionView;
 import software.ulpgc.chess.frontend.ports.ChessService;
@@ -19,6 +20,7 @@ public final class ChessController {
     private final Map<String, SessionView> sessions = new HashMap<>();
     private List<RoomView> rooms = List.of();
     private RoomView current;
+    private OpponentPresence opponentPresence = OpponentPresence.UNKNOWN;
     private int replayIndex = -1;
 
     public ChessController(ChessService service) { this.service = Objects.requireNonNull(service); }
@@ -41,16 +43,28 @@ public final class ChessController {
     public CompletableFuture<Void> watch(String id) {
         return service.room(requireText(id, "Selecciona una sala o pega su código.")).thenAccept(loaded -> {
             current = loaded;
+            opponentPresence = OpponentPresence.UNKNOWN;
             replayIndex = -1;
         });
     }
 
     public CompletableFuture<Void> refresh() {
         if (current == null) return listRooms();
-        return service.room(current.id()).thenAccept(loaded -> {
-            current = loaded;
-            if (replayIndex > loaded.moves().size()) replayIndex = loaded.moves().size();
+        SessionView session = sessions.get(current.id());
+        if (session == null || !(current.status().equals("ACTIVE") || current.status().equals("WAITING")))
+            return service.room(current.id()).thenAccept(this::updateRoom);
+
+        return service.presence(current.id(), session.token()).thenAccept(loaded -> {
+            updateRoom(loaded.room());
+            opponentPresence = loaded.opponentPresence();
+        }).whenComplete((ignored, failure) -> {
+            if (failure != null) opponentPresence = OpponentPresence.UNKNOWN;
         });
+    }
+
+    private void updateRoom(RoomView loaded) {
+        current = loaded;
+        if (replayIndex > loaded.moves().size()) replayIndex = loaded.moves().size();
     }
 
     public CompletableFuture<Void> move(String from, String to, String promotion) {
@@ -75,12 +89,12 @@ public final class ChessController {
 
     /** Safe, immutable presentation data. Player tokens never enter the view. */
     public View view() {
-        if (current == null) return new View(null, "", true, 0, INITIAL_FEN);
+        if (current == null) return new View(null, "", true, 0, INITIAL_FEN, OpponentPresence.UNKNOWN);
         SessionView session = sessions.get(current.id());
         boolean live = replayIndex == -1;
         int index = live ? current.moves().size() : replayIndex;
         String fen = live ? current.fen() : index == 0 ? INITIAL_FEN : current.moves().get(index - 1).fen();
-        return new View(current, session == null ? "" : session.color(), live, index, fen);
+        return new View(current, session == null ? "" : session.color(), live, index, fen, opponentPresence);
     }
 
     private SessionView requireActiveSession() {
@@ -95,6 +109,7 @@ public final class ChessController {
     private void accept(SessionView session) {
         sessions.put(session.room().id(), session);
         current = session.room();
+        opponentPresence = OpponentPresence.UNKNOWN;
         replayIndex = -1;
     }
 
@@ -103,7 +118,8 @@ public final class ChessController {
         return value.strip();
     }
 
-    public record View(RoomView room, String color, boolean live, int index, String fen) {
+    public record View(RoomView room, String color, boolean live, int index, String fen,
+                       OpponentPresence opponentPresence) {
         public boolean participant() { return !color.isEmpty(); }
         public boolean canResign() { return participant() && live && room != null && room.status().equals("ACTIVE"); }
         public boolean canPlay() {

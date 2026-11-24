@@ -46,6 +46,7 @@ en la interfaz; el recorrido manual y sus resultados se documentan por separado.
 de movimiento al turno propio y conserva el abandono durante el turno rival. La sesión 14 permite copiar el FEN
 de la posición visible y girar el tablero desde el directo o el histórico. La sesión 15 añade búsqueda
 por nombre de jugador o código de sala y un filtro por estado.
+La sesión 16 muestra la actividad reciente del rival y avisa cuando dejan de llegar sus consultas.
 
 ## Serialización FEN
 
@@ -88,6 +89,7 @@ la interfaz gráfica y los adaptadores de red.
 | MoveView | number, from, to, promotion, player, fen y at: información de un movimiento. |
 | RoomView | id, white, black, status, fen, version, createdAt y moves: información pública de una sala. |
 | SessionView | room, token y color: respuesta destinada al jugador al crear o unirse a una sala. |
+| PresenceView | Sala y estado de actividad del rival para la consulta autenticada de un jugador. |
 | WireCodec | Conversión entre estos datos y texto con formato Properties. |
 
 Los tres tipos de datos son records. RoomView realiza una copia defensiva de la lista de movimientos.
@@ -101,6 +103,8 @@ publicarse en las consultas de salas ni en registros de diagnóstico.
 - Cada movimiento usa el prefijo `move.N.`, empezando por cero, seguido de `number`, `from`, `to`, `promotion`,
   `player`, `fen` y `at`.
 - Una sesión añade `token` y `color` a los campos de la sala.
+- Una respuesta de presencia añade `opponentPresence` a los campos de la sala. Sus valores son
+  `UNKNOWN`, `CONNECTED` y `DISCONNECTED`.
 - Un listado comienza con `count`. Cada sala utiliza el prefijo `room.N.` sobre las claves anteriores.
 - `promotion` admite una cadena vacía cuando no hay promoción; el formato conserva cadenas vacías como valores.
 
@@ -252,11 +256,12 @@ codificación. No se utiliza JSON ni un formulario URL-encoded.
 | POST /rooms | `player`. | 201, SessionView del jugador de blancas y cabecera Location de la sala. |
 | GET /rooms/{id} | Sin cuerpo. | 200, RoomView con posición e histórico. |
 | POST /rooms/{id}/join | `player`. | 200, SessionView del jugador de negras. |
+| POST /rooms/{id}/presence | Sin campos. | 200, PresenceView con la sala y la actividad reciente del rival. |
 | POST /rooms/{id}/moves | `from`, `to`, `version` y `promotion` opcional. | 200, RoomView actualizada. |
 | POST /rooms/{id}/resign | `version`. | 200, RoomView con resultado por abandono. |
 
-Las operaciones moves y resign requieren una única cabecera `X-Player-Token` con la credencial recibida al crear
-la sala o unirse. La versión se envía en el cuerpo como entero no negativo y debe coincidir con la versión actual.
+Las operaciones presence, moves y resign requieren una única cabecera `X-Player-Token` con la credencial recibida al crear
+la sala o unirse. En moves y resign la versión se envía en el cuerpo como entero no negativo y debe coincidir con la versión actual.
 Las consultas de sala y listado son públicas para quien pueda conectarse al servidor, y sus respuestas no incluyen
 tokens ni hashes. Crear o unirse devuelve la SessionView destinada a ese jugador.
 
@@ -362,10 +367,11 @@ replayAt(0) selecciona la posición inicial y replayAt(n) la registrada tras el 
 disponible. La reproducción sólo cambia la vista local y bloquea las órdenes de mover y abandonar. live() vuelve
 a la posición más reciente conocida.
 
-refresh() consulta la sala abierta o actualiza el listado si aún no hay sala. La selección histórica se conserva
+refresh() consulta la sala abierta o actualiza el listado si aún no hay sala. Una sesión local en una sala en espera
+o en juego utiliza la consulta de presencia. La selección histórica se conserva
 mientras su índice siga disponible. Hasta completar correctamente la respuesta se mantiene el estado anterior;
 thenAccept publica la nueva instantánea antes de que finalice el futuro del controlador. Si la operación falla,
-se mantienen la última vista y la sesión local y el llamador puede volver a consultar.
+se mantienen la última sala y la sesión local. La actividad del rival queda sin confirmar hasta una respuesta correcta.
 
 ### Permisos por turno y acción
 
@@ -407,6 +413,7 @@ el contrato de mensajes y las operaciones del sistema.
 |---|---|
 | rooms | GET /rooms. |
 | room | GET /rooms/{id}. |
+| presence | POST /rooms/{id}/presence con la credencial del jugador. |
 | create | POST /rooms con player. |
 | join | POST /rooms/{id}/join con player. |
 | move | POST /rooms/{id}/moves con from, to, promotion y version. |
@@ -536,6 +543,22 @@ el catálogo de otras salas se consulta con Actualizar salas. Sin sala abierta, 
 Al cerrar la ventana se detiene el Timer. Esto no cancela necesariamente una petición HTTP ya iniciada: el futuro
 puede completarse posteriormente. Las órdenes de mover o abandonar no se reenvían automáticamente; las consultas
 periódicas permiten recuperar el estado cuando el servidor vuelve a estar disponible mientras la ventana siga abierta.
+
+### Aviso de desconexión del rival
+
+Cada consulta autenticada de un jugador registra que su cliente sigue activo en esa sala y devuelve la vista de
+la sala junto con la actividad del rival. Los espectadores consultan sin credencial mediante GET. El backend indica
+que el rival está desconectado cuando pasan 12 segundos sin actividad reconocida. La interfaz lo muestra en su
+siguiente actualización. Si el mismo cliente vuelve a consultar, el rival vuelve a figurar como conectado.
+
+El aviso se basa en actividad reciente. Un cliente que cambia de sala, mantiene un diálogo abierto demasiado tiempo
+o pierde la red también puede aparecer desconectado. Si el servidor deja de responder, la ventana muestra el fallo
+de comunicación y deja la presencia del rival sin confirmar. Tras reiniciar, el backend da hasta 12 segundos a los
+clientes que conservan su sesión para volver a informar de que siguen activos.
+
+Las marcas de tiempo viven en memoria. La presencia permite consultar el estado sin escribir archivos de partidas,
+incrementar la versión, cambiar el turno o decidir un resultado. Si se cierra el cliente, el jugador pierde la
+credencial que guardaba en memoria. La plaza de la partida queda reservada y la partida sigue disponible para observarla.
 
 ### Ejecutar las dos aplicaciones
 
@@ -745,10 +768,15 @@ Verificaciones locales:
 - Sesión 13, 17 de noviembre de 2026: 88 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 14, 19 de noviembre de 2026: 89 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 15, 20 de noviembre de 2026: 90 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 16, 24 de noviembre de 2026: 91 pruebas superadas con JDK 27 en una copia de verificación.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
 FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 12; HttpChessServiceTest, 6;
-SwingPresentationTest, 6; EndToEndTest, 1.
+SwingPresentationTest, 6; EndToEndTest, 2.
+
+El segundo recorrido integrado utiliza un reloj controlado. Comprueba el aviso en Swing al expirar el tiempo del
+rival, su vuelta, el rechazo de una credencial incorrecta y una consulta de espectador. Verifica que la versión,
+el historial y el archivo se conservan durante la pausa y que se puede continuar cuando vuelve el jugador.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -831,7 +859,8 @@ una sesión de escritorio ni la recuperación de credenciales de jugador tras ce
 - feature/13-turn-controls: permisos por turno para mover y permiso independiente para abandonar.
 - feature/14-fen-orientation: copia del FEN visible y giro del tablero.
 - feature/15-room-filters: búsqueda local de salas por nombre, código y estado.
+- feature/16-player-presence: aviso de desconexión del rival en partidas en juego.
 
 ## Próximas etapas
 
-La próxima etapa abordará los conflictos de versión entre clientes y la actualización del estado tras un rechazo del servidor.
+Las próximas etapas completarán el diagrama de arquitectura, las evidencias y la verificación desde un clon limpio.

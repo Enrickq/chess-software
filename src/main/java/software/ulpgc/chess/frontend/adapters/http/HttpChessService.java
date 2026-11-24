@@ -1,5 +1,6 @@
 package software.ulpgc.chess.frontend.adapters.http;
 
+import software.ulpgc.chess.contract.PresenceView;
 import software.ulpgc.chess.contract.RoomView;
 import software.ulpgc.chess.contract.SessionView;
 import software.ulpgc.chess.contract.WireCodec;
@@ -41,6 +42,9 @@ public final class HttpChessService implements ChessService {
     }
     @Override public CompletableFuture<RoomView> room(String id) {
         return request("GET", path(id), null, null).thenApply(WireCodec::decodeRoom);
+    }
+    @Override public CompletableFuture<PresenceView> presence(String id, String token) {
+        return request("POST", path(id) + "/presence", Map.of(), token).thenApply(WireCodec::decodePresence);
     }
     @Override public CompletableFuture<SessionView> create(String player) {
         return request("POST", "/rooms", Map.of("player", player), null).thenApply(WireCodec::decodeSession);

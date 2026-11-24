@@ -41,6 +41,7 @@ public final class ChessPanel extends JPanel {
     private final JLabel connection = label("Conexión pendiente", 12, MUTED);
     private final JLabel title = label("Empieza una partida", 25, INK);
     private final JLabel subtitle = label("Crea una sala o entra con su código.", 13, MUTED);
+    private final JLabel opponent = label("", 13, MUTED);
     private final JLabel whitePlayer = label("Blancas · —", 14, INK);
     private final JLabel blackPlayer = label("Negras · —", 14, INK);
     private final JLabel phase = label("SIN SALA", 12, TEAL);
@@ -112,6 +113,12 @@ public final class ChessPanel extends JPanel {
             title.setText(room == null ? "Empieza una partida" : view.live() ? "Tablero en directo" : "Explora la partida");
             phase.setText(room == null ? "SIN SALA" : status(room.status()).toUpperCase());
             subtitle.setText(room == null ? "Crea una sala o entra con su código." : subtitle(room));
+            opponent.setText(room == null || !room.status().equals("ACTIVE") || !view.participant() ? ""
+                    : switch (view.opponentPresence()) {
+                        case UNKNOWN -> "Comprobando conexión del rival…";
+                        case CONNECTED -> "Rival conectado";
+                        case DISCONNECTED -> "Rival desconectado";
+                    });
             roomCode.setText(room == null ? "" : room.id());
             roomCode.setCaretPosition(0);
             roomCode.setToolTipText(room == null ? "" : room.id());
@@ -253,11 +260,12 @@ public final class ChessPanel extends JPanel {
         JPanel panel = new JPanel(new BorderLayout(0, 0));
         panel.setOpaque(false);
         panel.setBorder(new EmptyBorder(23, 8, 12, 8));
-        JPanel heading = new JPanel(new GridLayout(2, 1, 0, 5));
+        JPanel heading = new JPanel(new GridLayout(0, 1, 0, 5));
         heading.setOpaque(false);
         heading.setBorder(new EmptyBorder(0, 18, 4, 0));
         heading.add(title);
         heading.add(subtitle);
+        heading.add(opponent);
         panel.add(heading, BorderLayout.NORTH);
         panel.add(board, BorderLayout.CENTER);
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 5));
