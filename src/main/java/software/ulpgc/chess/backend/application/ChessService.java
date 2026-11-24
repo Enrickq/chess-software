@@ -4,6 +4,8 @@ import software.ulpgc.chess.backend.model.StoredRoom;
 import software.ulpgc.chess.backend.ports.RoomRepository;
 import software.ulpgc.chess.backend.ports.ChessUseCases;
 import software.ulpgc.chess.contract.MoveView;
+import software.ulpgc.chess.contract.PresenceView;
+import software.ulpgc.chess.contract.PresenceView.OpponentPresence;
 import software.ulpgc.chess.contract.RoomView;
 import software.ulpgc.chess.contract.SessionView;
 import software.ulpgc.chess.domain.model.Color;
@@ -19,10 +21,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,11 +38,14 @@ import static software.ulpgc.chess.backend.application.ChessException.Kind.*;
 
 /** Serializes commands; persistence succeeds before a new version becomes visible. */
 public final class ChessService implements ChessUseCases {
+    private static final Duration PRESENCE_TIMEOUT = Duration.ofSeconds(12);
     private final RoomRepository repository;
     private final MoveRules rules;
     private final Clock clock;
+    private final Instant startedAt;
     private final SecureRandom random = new SecureRandom();
     private final Map<String, StoredRoom> rooms = new LinkedHashMap<>();
+    private final Map<String, EnumMap<Color, Instant>> lastSeen = new HashMap<>();
     private final PositionSerializer serializer;
     private final PositionDeserializer deserializer;
 
@@ -52,6 +60,7 @@ public final class ChessService implements ChessUseCases {
         this.deserializer = deserializer;
         this.rules = rules;
         this.clock = clock;
+        this.startedAt = clock.instant();
         for (StoredRoom room : repository.findAll()) {
             if (rooms.putIfAbsent(room.view().id(), room) != null)
                 throw new IllegalArgumentException("Identificador de sala duplicado");
@@ -70,12 +79,26 @@ public final class ChessService implements ChessUseCases {
     }
 
     @Override
+    public synchronized PresenceView presence(String id, String token) {
+        StoredRoom stored = room(id);
+        Color color = authenticate(stored, token);
+        RoomView current = stored.view();
+        Instant observedAt = clock.instant();
+        if (current.status().equals("WAITING") || current.status().equals("ACTIVE"))
+            markSeen(id, color, observedAt);
+        OpponentPresence opponent = current.status().equals("ACTIVE")
+                ? opponentPresence(id, color.opposite(), observedAt) : OpponentPresence.UNKNOWN;
+        return new PresenceView(current, opponent);
+    }
+
+    @Override
     public synchronized SessionView create(String player) {
         String name = name(player);
         String token = token();
         RoomView view = new RoomView(UUID.randomUUID().toString(), name, "", "WAITING",
                 serializer.serialize(Position.initial()), 0, now(), List.of());
         persist(new StoredRoom(view, hash(token), ""));
+        markSeen(view.id(), Color.White, clock.instant());
         return new SessionView(view, token, Color.White.name());
     }
 
@@ -90,6 +113,7 @@ public final class ChessService implements ChessUseCases {
         String token = token();
         RoomView next = view(current, name, "ACTIVE", current.fen(), current.moves());
         persist(new StoredRoom(next, stored.whiteTokenHash(), hash(token)));
+        markSeen(id, Color.Black, clock.instant());
         return new SessionView(next, token, Color.Black.name());
     }
 
@@ -126,6 +150,7 @@ public final class ChessService implements ChessUseCases {
                 selectedPromotion, playerColor == Color.White ? current.white() : current.black(), fen, now()));
         RoomView next = view(current, current.black(), current.status(), fen, List.copyOf(moves));
         persist(new StoredRoom(next, stored.whiteTokenHash(), stored.blackTokenHash()));
+        markSeen(id, playerColor, clock.instant());
         return next;
     }
 
@@ -139,7 +164,21 @@ public final class ChessService implements ChessUseCases {
         String status = playerColor == Color.White ? "BLACK_WON" : "WHITE_WON";
         RoomView next = view(current, current.black(), status, current.fen(), current.moves());
         persist(new StoredRoom(next, stored.whiteTokenHash(), stored.blackTokenHash()));
+        lastSeen.remove(id);
         return next;
+    }
+
+    private void markSeen(String id, Color color, Instant instant) {
+        lastSeen.computeIfAbsent(id, ignored -> new EnumMap<>(Color.class)).put(color, instant);
+    }
+
+    private OpponentPresence opponentPresence(String id, Color color, Instant now) {
+        Instant latest = lastSeen.get(id).get(color);
+        if (latest == null)
+            return now.isBefore(startedAt.plus(PRESENCE_TIMEOUT))
+                    ? OpponentPresence.UNKNOWN : OpponentPresence.DISCONNECTED;
+        return now.isBefore(latest.plus(PRESENCE_TIMEOUT))
+                ? OpponentPresence.CONNECTED : OpponentPresence.DISCONNECTED;
     }
 
     private StoredRoom room(String id) {
