@@ -51,6 +51,7 @@ public final class ChessPanel extends JPanel {
     private final JButton create = button("Crear sala", true);
     private final JButton join = button("Unirme", true);
     private final JButton watch = button("Observar", false);
+    private final JButton resume = button("Reanudar partida", false);
     private final JButton refresh = button("Actualizar salas", false);
     private final JButton copy = button("Copiar código", false);
     private final JButton move = button("Mover", true);
@@ -228,6 +229,8 @@ public final class ChessPanel extends JPanel {
         choices.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
         choices.setAlignmentX(LEFT_ALIGNMENT);
         panel.add(choices);
+        resume.setToolTipText("Vuelve a tu última sala con el mismo color.");
+        panel.add(resume);
         panel.add(Box.createVerticalStrut(23));
         JLabel searchLabel = label("Buscar salas", 13, INK);
         searchLabel.setLabelFor(roomSearch);
@@ -363,12 +366,13 @@ public final class ChessPanel extends JPanel {
         });
         join.addActionListener(e -> {
             String id = selectedRoomId(), name = player.getText();
-            execute(() -> controller.join(id, name), "Has entrado en la sala. Las blancas empiezan.");
+            execute(() -> controller.join(id, name), "Has entrado en la sala.");
         });
         watch.addActionListener(e -> {
             String id = selectedRoomId();
             execute(() -> controller.watch(id), "Sala abierta. Usa el historial para recorrer la partida.");
         });
+        resume.addActionListener(e -> execute(controller::resume, "Has recuperado tu plaza en la partida."));
         refresh.addActionListener(e -> execute(() -> controller.listRooms().thenCompose(ignored -> controller.refresh()), "Salas actualizadas."));
         roomSearch.getDocument().addDocumentListener(new DocumentListener() {
             @Override public void insertUpdate(DocumentEvent e) { applyFilters(); }
@@ -504,6 +508,8 @@ public final class ChessPanel extends JPanel {
             component.setEnabled(!busy);
         }
         boolean hasRoom = view.room() != null;
+        resume.setVisible(controller.canResume());
+        resume.setEnabled(!busy && controller.canResume());
         copy.setEnabled(hasRoom);
         copyFen.setEnabled(!busy && hasRoom);
         flipBoard.setEnabled(!busy && hasRoom);
