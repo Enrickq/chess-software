@@ -22,4 +22,5 @@ data/
 tmp/
 *.tmp
 *.room
+*.chess-session
 *.bundle
