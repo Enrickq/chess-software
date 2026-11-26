@@ -2,6 +2,45 @@
 
 Proyecto de Ingeniería de Software II: sistema de salas de ajedrez.
 
+## Inicio rápido
+
+Instala JDK 27 y Maven. Desde la raíz del repositorio, ejecuta `mvn clean verify`. En una terminal arranca
+el backend y, en otras dos terminales, ejecuta el cliente Swing. El servidor del ejemplo escucha en el puerto
+8080 y guarda sus partidas en `data`. Las [instrucciones de ejecución](#ejecutar-las-dos-aplicaciones) incluyen
+los comandos completos, los argumentos y el arranque de clientes con perfiles separados.
+
+## Arquitectura del sistema
+
+```mermaid
+flowchart LR
+    subgraph Frontend["Frontend de escritorio"]
+        UI["ChessPanel y BoardPanel"] --> Controller["ChessController"]
+        Controller --> ClientPort["Puerto ChessService"] --> ClientHttp["HttpChessService"]
+        Controller --> LocalPort["Puerto SessionStore"] --> LocalFile["FileSessionStore<br/>Perfil privado opcional"]
+    end
+    subgraph Backend["Backend Java"]
+        ServerHttp["HttpChessServer"] --> Input["Puerto ChessUseCases"] --> Service["ChessService"]
+        Service --> Domain["Dominio y MoveRules"]
+        Service --> Output["Puerto RoomRepository"] --> Repository["FileRoomRepository"]
+    end
+    ClientHttp <-->|"HTTP y contrato Properties UTF-8"| ServerHttp
+    Repository --> Database[("Archivos .room")]
+```
+
+El contrato compartido define `RoomView`, `SessionView`, `MoveView` y `PresenceView`. El backend valida
+la identidad, el turno y las jugadas, y registra el estado de cada sala. El frontend usa un puerto distinto para
+su perfil opcional, que guarda la credencial local de la última sala. Los [casos de uso del backend](#casos-de-uso-del-backend),
+los [casos de uso del frontend](#casos-de-uso-del-frontend) y las [rutas HTTP](#rutas-y-mensajes) detallan las clases.
+
+## Aportación propia
+
+El modo espectador permite seguir una partida sin ocupar una plaza. Su histórico interactivo permite volver
+a cualquier movimiento sin cambiar la partida en directo. Se puede girar el tablero para verla desde el lado de
+cualquiera de los jugadores y copiar su FEN para compartir exactamente la posición que se está comentando.
+La reproducción y el cambio de orientación pertenecen al cliente. El servidor aporta el histórico común
+y valida los cambios de la partida. La [captura del recorrido manual](docs/images/manual-02-history.png) muestra
+la consulta del histórico desde la ventana de un espectador.
+
 ## Material de partida
 
 Se amplían el modelo del tablero y los puertos trabajados en clase. Cada sesión integra una parte del sistema y
@@ -47,6 +86,7 @@ de movimiento al turno propio y conserva el abandono durante el turno rival. La 
 de la posición visible y girar el tablero desde el directo o el histórico. La sesión 15 añade búsqueda
 por nombre de jugador o código de sala y un filtro por estado.
 La sesión 16 muestra la actividad reciente del rival y avisa cuando dejan de llegar sus consultas.
+La sesión 17 permite recuperar la última plaza desde un perfil local al reabrir el cliente.
 
 ## Serialización FEN
 
@@ -349,10 +389,13 @@ llamadores arbitrarios que modifiquen su estado simultáneamente; ChessPanel cum
 
 ### Salas, sesiones y órdenes
 
-Crear o unirse guarda la SessionView en memoria cuando llega correctamente la respuesta. La consulta de una sala
+Crear o unirse conserva una sesión de jugador en memoria cuando llega correctamente la respuesta. La consulta de una sala
 no ocupa una plaza: si el controlador conserva una sesión para ella muestra el color del jugador; si no, actúa como
 espectador. Volver a abrir una sala propia reutiliza su sesión local, sin volver a solicitar el puesto de negras.
-Las sesiones se conservan mientras existe el controlador y no se escriben en disco.
+Con `--session-file`, el puerto `SessionStore` guarda también la última plaza de ese cliente. Reanudar usa
+la consulta autenticada de presencia y sólo abre la partida como jugador si el backend acepta la credencial.
+El archivo se lee al arrancar, antes del hilo de Swing. Al crear o unirse, la continuación asíncrona lo escribe
+fuera del hilo gráfico. La vista de Swing sólo recibe el color, el estado de la sala y los datos para dibujar el tablero.
 
 Mover y abandonar requieren una sala activa, una sesión de jugador y la vista en directo. Mover exige además
 el turno propio; abandonar puede solicitarse durante el turno del rival. El controlador envía el token y la última
@@ -556,9 +599,9 @@ o pierde la red también puede aparecer desconectado. Si el servidor deja de res
 de comunicación y deja la presencia del rival sin confirmar. Tras reiniciar, el backend da hasta 12 segundos a los
 clientes que conservan su sesión para volver a informar de que siguen activos.
 
-Las marcas de tiempo viven en memoria. La presencia permite consultar el estado sin escribir archivos de partidas,
-incrementar la versión, cambiar el turno o decidir un resultado. Si se cierra el cliente, el jugador pierde la
-credencial que guardaba en memoria. La plaza de la partida queda reservada y la partida sigue disponible para observarla.
+Las marcas de tiempo viven en memoria. La consulta de presencia conserva los archivos de partidas, la versión y el
+turno. La plaza queda reservada y la partida sigue disponible para observarla o reanudarla con el perfil correspondiente.
+La desconexión mantiene el estado de la partida y no adjudica un resultado.
 
 ### Ejecutar las dos aplicaciones
 
@@ -588,6 +631,19 @@ Repite el comando del frontend en otra terminal para abrir el segundo jugador. O
 espectador. Todos deben apuntar al mismo servidor. `--server` tiene como valor predeterminado
 `http://127.0.0.1:8080`; `--help` muestra el uso. FrontendMain informa si no hay entorno gráfico disponible.
 
+Para recuperar la plaza tras cerrar el cliente, añade un archivo de sesión privado a cada jugador. Los archivos se
+crean al entrar como jugador.
+
+```text
+java -cp target/chess-software-1.0.0.jar software.ulpgc.chess.frontend.FrontendMain --server http://127.0.0.1:8080 --session-file data/ana.chess-session
+java -cp target/chess-software-1.0.0.jar software.ulpgc.chess.frontend.FrontendMain --server http://127.0.0.1:8080 --session-file data/luis.chess-session
+```
+
+Al volver a abrir un cliente con el mismo servidor y archivo, pulsa **Reanudar partida**. Cada archivo guarda
+la última plaza de jugador adquirida en ese perfil y contiene su credencial. Usa uno por cliente, en una carpeta
+privada. Consérvalo fuera de Git y de las capturas. Los patrones `data/` y `*.chess-session` están ignorados.
+El almacenamiento del servidor conserva los hashes necesarios para validar la plaza tras un reinicio.
+
 El script opcional ofrece el mismo arranque desde PowerShell:
 
 ```powershell
@@ -608,10 +664,9 @@ en IntelliJ, como se indica en las instrucciones del backend.
 
 Estos pasos describen el uso previsto; los resultados del recorrido real se consignan en el registro de la
 sesión 12. Las vistas automatizadas se explican por separado en la sección de integración y evidencias.
-Las credenciales se conservan sólo en la memoria del controlador. Si se cierra el cliente, una nueva
-instancia no recupera automáticamente su plaza: puede observar la partida, pero no dispone del token anterior.
-Reiniciar únicamente el backend con el mismo directorio conserva sus hashes y permite continuar a los clientes que
-siguen abiertos con su sesión local.
+Sin un perfil en disco, la credencial dura mientras la ventana sigue abierta. El perfil opcional permite recuperar
+la última plaza con **Reanudar partida**. Al reiniciar el backend, usa el mismo directorio de partidas para que se
+conserven los hashes, la sala y sus movimientos.
 
 La interfaz desactiva las órdenes para espectadores, salas no activas y reproducción del histórico. Fuera del
 turno propio se deshabilitan el movimiento, sus campos y la selección de piezas; abandonar sigue disponible si
@@ -769,14 +824,18 @@ Verificaciones locales:
 - Sesión 14, 19 de noviembre de 2026: 89 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 15, 20 de noviembre de 2026: 90 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 16, 24 de noviembre de 2026: 91 pruebas superadas con JDK 27 en una copia de verificación.
+- Sesión 17, 26 de noviembre de 2026: 92 pruebas superadas con JDK 27 en una copia de verificación.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
 FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 12; HttpChessServiceTest, 6;
-SwingPresentationTest, 6; EndToEndTest, 2.
+SwingPresentationTest, 6; EndToEndTest, 3.
 
-El segundo recorrido integrado utiliza un reloj controlado. Comprueba el aviso en Swing al expirar el tiempo del
+El recorrido de desconexión utiliza un reloj controlado. Comprueba el aviso en Swing al expirar el tiempo del
 rival, su vuelta, el rechazo de una credencial incorrecta y una consulta de espectador. Verifica que la versión,
 el historial y el archivo se conservan durante la pausa y que se puede continuar cuando vuelve el jugador.
+El recorrido de recuperación abre un controlador nuevo, carga el perfil y verifica que su jugador conserva el color,
+la versión y la posición antes de realizar la siguiente jugada. Comprueba además el rechazo de un perfil asociado a
+otro servidor y de una credencial de sala incorrecta.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -860,7 +919,8 @@ una sesión de escritorio ni la recuperación de credenciales de jugador tras ce
 - feature/14-fen-orientation: copia del FEN visible y giro del tablero.
 - feature/15-room-filters: búsqueda local de salas por nombre, código y estado.
 - feature/16-player-presence: aviso de desconexión del rival en partidas en juego.
+- feature/17-resume-player-session: recuperación de la última plaza mediante un perfil local separado por jugador.
 
 ## Próximas etapas
 
-Las próximas etapas completarán el diagrama de arquitectura, las evidencias y la verificación desde un clon limpio.
+El cierre actualizará las evidencias del escritorio y repetirá la verificación desde un clon limpio de la versión final.
