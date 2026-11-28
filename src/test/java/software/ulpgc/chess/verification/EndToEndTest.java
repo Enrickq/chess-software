@@ -2,15 +2,22 @@ package software.ulpgc.chess.verification;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import software.ulpgc.chess.adapters.FenPositionDeserializer;
+import software.ulpgc.chess.adapters.FenPositionSerializer;
 import software.ulpgc.chess.backend.BackendFactory;
 import software.ulpgc.chess.backend.adapters.FileRoomRepository;
 import software.ulpgc.chess.backend.adapters.HttpChessServer;
+import software.ulpgc.chess.backend.application.ChessService;
+import software.ulpgc.chess.domain.service.MoveRules;
 import software.ulpgc.chess.frontend.adapters.http.HttpChessService;
+import software.ulpgc.chess.frontend.adapters.local.FileSessionStore;
 import software.ulpgc.chess.frontend.adapters.swing.ChessPanel;
 import software.ulpgc.chess.frontend.application.ChessController;
 import software.ulpgc.chess.frontend.ports.ServiceException;
+import software.ulpgc.chess.frontend.ports.SessionStore.PlayerSession;
 
 import javax.imageio.ImageIO;
+import javax.swing.JLabel;
 import javax.swing.SwingUtilities;
 import java.awt.Component;
 import java.awt.Container;
@@ -19,15 +26,101 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
+import static software.ulpgc.chess.contract.PresenceView.OpponentPresence.*;
 
 /** Real HTTP, real disk adapter and the same controllers/panel used by the desktop frontend. */
 class EndToEndTest {
     @TempDir Path data;
+
+    @Test void reopeningTheClientRecoversItsSeatAndContinuesTheSameGame() throws Exception {
+        try (var server = server(); var http = HttpClient.newHttpClient()) {
+            URI endpoint = URI.create("http://127.0.0.1:" + server.port());
+            var service = new HttpChessService(endpoint, http);
+            Path profile = data.resolve("profiles/luis.chess-session");
+            var white = new ChessController(service);
+            var black = new ChessController(service, new FileSessionStore(profile, endpoint));
+            assertFalse(black.canResume());
+            await(white.create("Ana"));
+            String room = white.view().room().id();
+            await(black.join(room, "Luis"));
+            await(white.refresh());
+            await(white.move("e2", "e4", ""));
+            var before = white.view().room();
+
+            var reopened = new ChessController(service, new FileSessionStore(profile, endpoint));
+            assertTrue(reopened.canResume());
+            assertNull(reopened.view().room());
+            await(reopened.resume());
+            assertEquals(before, reopened.view().room());
+            assertEquals("Black", reopened.view().color());
+            assertTrue(reopened.view().canPlay());
+            await(reopened.move("e7", "e5", ""));
+            assertEquals(2, reopened.view().room().moves().size());
+            assertEquals(before.version() + 1, reopened.view().room().version());
+
+            URI otherServer = URI.create(endpoint + "/other");
+            assertThrows(IllegalStateException.class, () -> new FileSessionStore(profile, otherServer).load());
+            var invalidProfile = new FileSessionStore(data.resolve("invalid.chess-session"), endpoint);
+            invalidProfile.save(new PlayerSession(room, "0".repeat(43), "Black"));
+            var stranger = new ChessController(service, invalidProfile);
+            assertThrows(ServiceException.class, () -> await(stranger.resume()));
+            assertFalse(stranger.view().participant());
+        }
+    }
+
+    @Test void rivalTimesOutAndReturnsWithoutChangingTheGame() throws Exception {
+        var time = new TestClock(new AtomicReference<>(Instant.parse("2026-01-01T00:00:00Z")), ZoneOffset.UTC);
+        var service = new ChessService(new FileRoomRepository(data),
+                new FenPositionSerializer(), new FenPositionDeserializer(), new MoveRules(), time);
+        try (var server = new HttpChessServer("127.0.0.1", 0, service);
+             var http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()) {
+            server.start();
+            ChessController white = client(server, http), black = client(server, http), spectator = client(server, http);
+            await(white.create("Ana"));
+            var id = white.view().room().id();
+            await(black.join(id, "Luis"));
+            await(white.refresh());
+            assertEquals(CONNECTED, white.view().opponentPresence());
+            await(white.move("e2", "e4", ""));
+            var before = white.view().room();
+            var saved = Files.readString(data.resolve(id + ".room"));
+            var anonymous = new HttpChessService(URI.create("http://127.0.0.1:" + server.port()), http);
+            var unauthorized = assertThrows(ExecutionException.class,
+                    () -> anonymous.presence(id, "invalid").get(5, TimeUnit.SECONDS));
+            assertInstanceOf(ServiceException.class, unauthorized.getCause());
+            assertTrue(unauthorized.getCause().getMessage().contains("HTTP 403"));
+
+            time.advanceSeconds(11);
+            await(white.refresh());
+            assertEquals(CONNECTED, white.view().opponentPresence());
+            time.advanceSeconds(1);
+            await(spectator.watch(id));
+            await(spectator.refresh());
+            assertEquals(UNKNOWN, spectator.view().opponentPresence());
+            await(white.refresh());
+            assertEquals(DISCONNECTED, white.view().opponentPresence());
+            SwingUtilities.invokeAndWait(() -> assertTrue(hasLabel(new ChessPanel(white), "Rival desconectado")));
+            assertEquals(before, white.view().room());
+            assertEquals(saved, Files.readString(data.resolve(id + ".room")));
+
+            await(black.refresh());
+            await(white.refresh());
+            assertEquals(CONNECTED, white.view().opponentPresence());
+            SwingUtilities.invokeAndWait(() -> assertTrue(hasLabel(new ChessPanel(white), "Rival conectado")));
+            await(black.move("e7", "e5", ""));
+            assertEquals(2, black.view().room().moves().size());
+        }
+    }
 
     @Test void twoFrontendsReplayAndRecoverPersistedGame() throws Exception {
         try (HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()) {
@@ -115,5 +208,28 @@ class EndToEndTest {
     private static void layout(Container parent) {
         parent.doLayout();
         for (Component child : parent.getComponents()) if (child instanceof Container container) layout(container);
+    }
+
+    private static boolean hasLabel(Container parent, String text) {
+        for (Component child : parent.getComponents()) {
+            if (child instanceof JLabel label && text.equals(label.getText())) return true;
+            if (child instanceof Container container && hasLabel(container, text)) return true;
+        }
+        return false;
+    }
+
+    private static final class TestClock extends Clock {
+        private final AtomicReference<Instant> instant;
+        private final ZoneId zone;
+
+        private TestClock(AtomicReference<Instant> instant, ZoneId zone) {
+            this.instant = instant;
+            this.zone = zone;
+        }
+
+        void advanceSeconds(long seconds) { instant.updateAndGet(value -> value.plusSeconds(seconds)); }
+        @Override public Instant instant() { return instant.get(); }
+        @Override public ZoneId getZone() { return zone; }
+        @Override public Clock withZone(ZoneId zone) { return new TestClock(instant, zone); }
     }
 }

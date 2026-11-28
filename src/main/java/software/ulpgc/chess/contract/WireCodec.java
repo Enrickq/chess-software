@@ -26,6 +26,17 @@ public final class WireCodec {
     }
     public static String encodeRoom(RoomView room) { Map<String,String> fields = new LinkedHashMap<>(); putRoom(fields, "", room); return encodeFields(fields); }
     public static RoomView decodeRoom(String text) { return room(decodeFields(text), ""); }
+    public static String encodePresence(PresenceView presence) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        putRoom(fields, "", presence.room());
+        fields.put("opponentPresence", presence.opponentPresence().name());
+        return encodeFields(fields);
+    }
+    public static PresenceView decodePresence(String text) {
+        Map<String, String> fields = decodeFields(text);
+        return new PresenceView(room(fields, ""),
+                PresenceView.OpponentPresence.valueOf(required(fields, "opponentPresence")));
+    }
     public static String encodeSession(SessionView session) {
         Map<String,String> fields = new LinkedHashMap<>(); putRoom(fields, "", session.room());
         fields.put("token", session.token()); fields.put("color", session.color()); return encodeFields(fields);

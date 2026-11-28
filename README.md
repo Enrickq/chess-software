@@ -2,6 +2,79 @@
 
 Proyecto de Ingeniería de Software II: sistema de salas de ajedrez.
 
+## Inicio rápido
+
+Con JDK 27 y Maven, ejecuta estos tres pasos desde la raíz del repositorio.
+
+1. Compila y ejecuta las pruebas con `mvn clean verify`.
+2. En una terminal, arranca el servidor.
+
+   ```text
+   java -jar target/chess-software-1.0.0.jar --host 127.0.0.1 --port 8080 --data data
+   ```
+
+3. En otras dos terminales, abre un cliente por jugador. Usa un archivo distinto para cada uno.
+
+   ```text
+   java -cp target/chess-software-1.0.0.jar software.ulpgc.chess.frontend.FrontendMain --server http://127.0.0.1:8080 --session-file data/ana.chess-session
+   java -cp target/chess-software-1.0.0.jar software.ulpgc.chess.frontend.FrontendMain --server http://127.0.0.1:8080 --session-file data/luis.chess-session
+   ```
+
+En Ana, crea una sala y copia su código. En Luis, pega el código y pulsa **Unirme**. Para volver después de cerrar
+uno de los clientes, ejecútalo con su mismo archivo y pulsa **Reanudar partida**. Si 8080 está ocupado, usa otro
+puerto en el servidor y en ambos clientes. [Configuración y opciones de ejecución](#ejecutar-las-dos-aplicaciones)
+
+## Arquitectura del sistema
+
+```mermaid
+flowchart LR
+    subgraph Frontend["Frontend de escritorio"]
+        UI["ChessPanel y BoardPanel"] --> Controller["ChessController"]
+        Controller --> ClientPort["Puerto ChessService"] --> ClientHttp["HttpChessService"]
+        Controller --> LocalPort["Puerto SessionStore"] --> LocalFile["FileSessionStore<br/>Perfil privado opcional"]
+    end
+    subgraph Backend["Backend Java"]
+        ServerHttp["HttpChessServer"] --> Input["Puerto ChessUseCases"] --> Service["ChessService"]
+        Service --> Domain["Dominio y MoveRules"]
+        Service --> Output["Puerto RoomRepository"] --> Repository["FileRoomRepository"]
+    end
+    ClientHttp <-->|"HTTP y contrato Properties UTF-8"| ServerHttp
+    Repository --> Database[("Archivos .room")]
+```
+
+El contrato compartido define `RoomView`, `SessionView`, `MoveView` y `PresenceView`. El backend valida
+la identidad, el turno y las jugadas, y registra el estado de cada sala. El frontend usa un puerto distinto para
+su perfil opcional, que guarda la credencial local de la última sala. Los [casos de uso del backend](#casos-de-uso-del-backend),
+los [casos de uso del frontend](#casos-de-uso-del-frontend) y las [rutas HTTP](#rutas-y-mensajes) detallan las clases.
+
+## Aportación propia
+
+El modo espectador permite seguir una partida sin ocupar una plaza. Su histórico interactivo permite volver
+a cualquier movimiento sin cambiar la partida en directo. Se puede girar el tablero para verla desde el lado de
+cualquiera de los jugadores y copiar su FEN para compartir exactamente la posición que se está comentando.
+La reproducción y el cambio de orientación pertenecen al cliente. El servidor aporta el histórico común
+y valida los cambios de la partida. La [captura del recorrido manual](docs/images/manual-02-history.png) muestra
+la consulta del histórico desde la ventana de un espectador.
+
+## Evidencias de la entrega
+
+Estas imágenes muestran la interfaz Swing de la sesión 18 con datos del backend local. El caso de integración
+las exporta en modo headless. El [registro final](docs/FINAL_VERIFICATION.md) recoge la compilación en un clon
+limpio, el reinicio del servidor y la recuperación de una plaza. Las [capturas de escritorio del recorrido anterior](#capturas-manuales-del-recorrido)
+siguen enlazadas con la versión en que se tomaron.
+
+**Sala creada.** Ana tiene el código y espera a que se una Luis.
+
+![Sala creada con código disponible](docs/images/final-01-room.png)
+
+**Tablero en directo.** Ana y Luis han jugado cuatro medias jugadas.
+
+![Tablero en directo con los dos jugadores](docs/images/final-02-board.png)
+
+**Histórico.** Un espectador revisa la posición tras la segunda media jugada.
+
+![Histórico de una partida desde el modo espectador](docs/images/final-03-history.png)
+
 ## Material de partida
 
 Se amplían el modelo del tablero y los puertos trabajados en clase. Cada sesión integra una parte del sistema y
@@ -46,6 +119,8 @@ en la interfaz; el recorrido manual y sus resultados se documentan por separado.
 de movimiento al turno propio y conserva el abandono durante el turno rival. La sesión 14 permite copiar el FEN
 de la posición visible y girar el tablero desde el directo o el histórico. La sesión 15 añade búsqueda
 por nombre de jugador o código de sala y un filtro por estado.
+La sesión 16 muestra la actividad reciente del rival y avisa cuando dejan de llegar sus consultas.
+La sesión 17 permite recuperar la última plaza desde un perfil local al reabrir el cliente.
 
 ## Serialización FEN
 
@@ -88,6 +163,7 @@ la interfaz gráfica y los adaptadores de red.
 | MoveView | number, from, to, promotion, player, fen y at: información de un movimiento. |
 | RoomView | id, white, black, status, fen, version, createdAt y moves: información pública de una sala. |
 | SessionView | room, token y color: respuesta destinada al jugador al crear o unirse a una sala. |
+| PresenceView | Sala y estado de actividad del rival para la consulta autenticada de un jugador. |
 | WireCodec | Conversión entre estos datos y texto con formato Properties. |
 
 Los tres tipos de datos son records. RoomView realiza una copia defensiva de la lista de movimientos.
@@ -101,6 +177,8 @@ publicarse en las consultas de salas ni en registros de diagnóstico.
 - Cada movimiento usa el prefijo `move.N.`, empezando por cero, seguido de `number`, `from`, `to`, `promotion`,
   `player`, `fen` y `at`.
 - Una sesión añade `token` y `color` a los campos de la sala.
+- Una respuesta de presencia añade `opponentPresence` a los campos de la sala. Sus valores son
+  `UNKNOWN`, `CONNECTED` y `DISCONNECTED`.
 - Un listado comienza con `count`. Cada sala utiliza el prefijo `room.N.` sobre las claves anteriores.
 - `promotion` admite una cadena vacía cuando no hay promoción; el formato conserva cadenas vacías como valores.
 
@@ -252,11 +330,12 @@ codificación. No se utiliza JSON ni un formulario URL-encoded.
 | POST /rooms | `player`. | 201, SessionView del jugador de blancas y cabecera Location de la sala. |
 | GET /rooms/{id} | Sin cuerpo. | 200, RoomView con posición e histórico. |
 | POST /rooms/{id}/join | `player`. | 200, SessionView del jugador de negras. |
+| POST /rooms/{id}/presence | Sin campos. | 200, PresenceView con la sala y la actividad reciente del rival. |
 | POST /rooms/{id}/moves | `from`, `to`, `version` y `promotion` opcional. | 200, RoomView actualizada. |
 | POST /rooms/{id}/resign | `version`. | 200, RoomView con resultado por abandono. |
 
-Las operaciones moves y resign requieren una única cabecera `X-Player-Token` con la credencial recibida al crear
-la sala o unirse. La versión se envía en el cuerpo como entero no negativo y debe coincidir con la versión actual.
+Las operaciones presence, moves y resign requieren una única cabecera `X-Player-Token` con la credencial recibida al crear
+la sala o unirse. En moves y resign la versión se envía en el cuerpo como entero no negativo y debe coincidir con la versión actual.
 Las consultas de sala y listado son públicas para quien pueda conectarse al servidor, y sus respuestas no incluyen
 tokens ni hashes. Crear o unirse devuelve la SessionView destinada a ese jugador.
 
@@ -344,10 +423,13 @@ llamadores arbitrarios que modifiquen su estado simultáneamente; ChessPanel cum
 
 ### Salas, sesiones y órdenes
 
-Crear o unirse guarda la SessionView en memoria cuando llega correctamente la respuesta. La consulta de una sala
+Crear o unirse conserva una sesión de jugador en memoria cuando llega correctamente la respuesta. La consulta de una sala
 no ocupa una plaza: si el controlador conserva una sesión para ella muestra el color del jugador; si no, actúa como
 espectador. Volver a abrir una sala propia reutiliza su sesión local, sin volver a solicitar el puesto de negras.
-Las sesiones se conservan mientras existe el controlador y no se escriben en disco.
+Con `--session-file`, el puerto `SessionStore` guarda también la última plaza de ese cliente. Reanudar usa
+la consulta autenticada de presencia y sólo abre la partida como jugador si el backend acepta la credencial.
+El archivo se lee al arrancar, antes del hilo de Swing. Al crear o unirse, la continuación asíncrona lo escribe
+fuera del hilo gráfico. La vista de Swing sólo recibe el color, el estado de la sala y los datos para dibujar el tablero.
 
 Mover y abandonar requieren una sala activa, una sesión de jugador y la vista en directo. Mover exige además
 el turno propio; abandonar puede solicitarse durante el turno del rival. El controlador envía el token y la última
@@ -362,10 +444,11 @@ replayAt(0) selecciona la posición inicial y replayAt(n) la registrada tras el 
 disponible. La reproducción sólo cambia la vista local y bloquea las órdenes de mover y abandonar. live() vuelve
 a la posición más reciente conocida.
 
-refresh() consulta la sala abierta o actualiza el listado si aún no hay sala. La selección histórica se conserva
+refresh() consulta la sala abierta o actualiza el listado si aún no hay sala. Una sesión local en una sala en espera
+o en juego utiliza la consulta de presencia. La selección histórica se conserva
 mientras su índice siga disponible. Hasta completar correctamente la respuesta se mantiene el estado anterior;
 thenAccept publica la nueva instantánea antes de que finalice el futuro del controlador. Si la operación falla,
-se mantienen la última vista y la sesión local y el llamador puede volver a consultar.
+se mantienen la última sala y la sesión local. La actividad del rival queda sin confirmar hasta una respuesta correcta.
 
 ### Permisos por turno y acción
 
@@ -407,6 +490,7 @@ el contrato de mensajes y las operaciones del sistema.
 |---|---|
 | rooms | GET /rooms. |
 | room | GET /rooms/{id}. |
+| presence | POST /rooms/{id}/presence con la credencial del jugador. |
 | create | POST /rooms con player. |
 | join | POST /rooms/{id}/join con player. |
 | move | POST /rooms/{id}/moves con from, to, promotion y version. |
@@ -537,6 +621,22 @@ Al cerrar la ventana se detiene el Timer. Esto no cancela necesariamente una pet
 puede completarse posteriormente. Las órdenes de mover o abandonar no se reenvían automáticamente; las consultas
 periódicas permiten recuperar el estado cuando el servidor vuelve a estar disponible mientras la ventana siga abierta.
 
+### Aviso de desconexión del rival
+
+Cada consulta autenticada de un jugador registra que su cliente sigue activo en esa sala y devuelve la vista de
+la sala junto con la actividad del rival. Los espectadores consultan sin credencial mediante GET. El backend indica
+que el rival está desconectado cuando pasan 12 segundos sin actividad reconocida. La interfaz lo muestra en su
+siguiente actualización. Si el mismo cliente vuelve a consultar, el rival vuelve a figurar como conectado.
+
+El aviso se basa en actividad reciente. Un cliente que cambia de sala, mantiene un diálogo abierto demasiado tiempo
+o pierde la red también puede aparecer desconectado. Si el servidor deja de responder, la ventana muestra el fallo
+de comunicación y deja la presencia del rival sin confirmar. Tras reiniciar, el backend da hasta 12 segundos a los
+clientes que conservan su sesión para volver a informar de que siguen activos.
+
+Las marcas de tiempo viven en memoria. La consulta de presencia conserva los archivos de partidas, la versión y el
+turno. La plaza queda reservada y la partida sigue disponible para observarla o reanudarla con el perfil correspondiente.
+La desconexión mantiene el estado de la partida y no adjudica un resultado.
+
 ### Ejecutar las dos aplicaciones
 
 Se necesita JDK 27, Maven y un entorno de escritorio para abrir el frontend. El backend conserva su manifiesto
@@ -565,6 +665,19 @@ Repite el comando del frontend en otra terminal para abrir el segundo jugador. O
 espectador. Todos deben apuntar al mismo servidor. `--server` tiene como valor predeterminado
 `http://127.0.0.1:8080`; `--help` muestra el uso. FrontendMain informa si no hay entorno gráfico disponible.
 
+Para recuperar la plaza tras cerrar el cliente, añade un archivo de sesión privado a cada jugador. Los archivos se
+crean al entrar como jugador.
+
+```text
+java -cp target/chess-software-1.0.0.jar software.ulpgc.chess.frontend.FrontendMain --server http://127.0.0.1:8080 --session-file data/ana.chess-session
+java -cp target/chess-software-1.0.0.jar software.ulpgc.chess.frontend.FrontendMain --server http://127.0.0.1:8080 --session-file data/luis.chess-session
+```
+
+Al volver a abrir un cliente con el mismo servidor y archivo, pulsa **Reanudar partida**. Cada archivo guarda
+la última plaza de jugador adquirida en ese perfil y contiene su credencial. Usa uno por cliente, en una carpeta
+privada. Consérvalo fuera de Git y de las capturas. Los patrones `data/` y `*.chess-session` están ignorados.
+El almacenamiento del servidor conserva los hashes necesarios para validar la plaza tras un reinicio.
+
 El script opcional ofrece el mismo arranque desde PowerShell:
 
 ```powershell
@@ -585,10 +698,9 @@ en IntelliJ, como se indica en las instrucciones del backend.
 
 Estos pasos describen el uso previsto; los resultados del recorrido real se consignan en el registro de la
 sesión 12. Las vistas automatizadas se explican por separado en la sección de integración y evidencias.
-Las credenciales se conservan sólo en la memoria del controlador. Si se cierra el cliente, una nueva
-instancia no recupera automáticamente su plaza: puede observar la partida, pero no dispone del token anterior.
-Reiniciar únicamente el backend con el mismo directorio conserva sus hashes y permite continuar a los clientes que
-siguen abiertos con su sesión local.
+Sin un perfil en disco, la credencial dura mientras la ventana sigue abierta. El perfil opcional permite recuperar
+la última plaza con **Reanudar partida**. Al reiniciar el backend, usa el mismo directorio de partidas para que se
+conserven los hashes, la sala y sus movimientos.
 
 La interfaz desactiva las órdenes para espectadores, salas no activas y reproducción del histórico. Fuera del
 turno propio se deshabilitan el movimiento, sus campos y la selección de piezas; abandonar sigue disponible si
@@ -703,7 +815,7 @@ Estado de la interfaz después de recuperar la conexión con el backend:
 
 El hito `milestone-01-domain-contract` agrupa el modelo, FEN, las reglas de movimiento y el contrato compartido.
 Es una etapa intermedia del proyecto, sin punto de entrada de la aplicación completa. La versión 1.0.0 del POM
-se mantiene como identificador del artefacto durante el desarrollo; la entrega final tendrá su propia etiqueta.
+identifica el artefacto. La etiqueta de entrega es `v1.0.0`.
 
 El primer hito se comprobó con 52 pruebas. Los casos de uso del backend, la persistencia y la API HTTP quedan
 fuera de esa etiqueta.
@@ -745,10 +857,20 @@ Verificaciones locales:
 - Sesión 13, 17 de noviembre de 2026: 88 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 14, 19 de noviembre de 2026: 89 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 15, 20 de noviembre de 2026: 90 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
+- Sesión 16, 24 de noviembre de 2026: 91 pruebas superadas con JDK 27 en una copia de verificación.
+- Sesión 17, 26 de noviembre de 2026: 92 pruebas superadas con JDK 27 en una copia de verificación.
+- Sesión 18, 28 de noviembre de 2026: 92 pruebas superadas con JDK 27 en un clon limpio de `5f4bce9`.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
 FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 12; HttpChessServiceTest, 6;
-SwingPresentationTest, 6; EndToEndTest, 1.
+SwingPresentationTest, 6; EndToEndTest, 3.
+
+El recorrido de desconexión utiliza un reloj controlado. Comprueba el aviso en Swing al expirar el tiempo del
+rival, su vuelta, el rechazo de una credencial incorrecta y una consulta de espectador. Verifica que la versión,
+el historial y el archivo se conservan durante la pausa y que se puede continuar cuando vuelve el jugador.
+El recorrido de recuperación abre un controlador nuevo, carga el perfil y verifica que su jugador conserva el color,
+la versión y la posición antes de realizar la siguiente jugada. Comprueba además el rechazo de un perfil asociado a
+otro servidor y de una credencial de sala incorrecta.
 
 Las pruebas de FEN comprueban posiciones iniciales y personalizadas, tablero vacío, campos de estado, conversión de ida
 y vuelta y rechazo de formatos incorrectos. Las pruebas de movimiento comprueban aperturas, capturas, obstáculos,
@@ -814,7 +936,7 @@ una sesión de escritorio ni la recuperación de credenciales de jugador tras ce
 
 ## Organización de ramas
 
-- main: hitos estables.
+- main: hitos estables y versión evaluable de la entrega.
 - develop: integración del trabajo comprobado.
 - feature/01-base-model: integración del modelo.
 - feature/02-fen-serialization: integración de la serialización FEN.
@@ -831,7 +953,15 @@ una sesión de escritorio ni la recuperación de credenciales de jugador tras ce
 - feature/13-turn-controls: permisos por turno para mover y permiso independiente para abandonar.
 - feature/14-fen-orientation: copia del FEN visible y giro del tablero.
 - feature/15-room-filters: búsqueda local de salas por nombre, código y estado.
+- feature/16-player-presence: aviso de desconexión del rival en partidas en juego.
+- feature/17-resume-player-session: recuperación de la última plaza mediante un perfil local separado por jugador.
+- feature/18-final-verification: evidencias actuales y verificación reproducible de la entrega.
 
-## Próximas etapas
+## Límites de la entrega
 
-La próxima etapa abordará los conflictos de versión entre clientes y la actualización del estado tras un rechazo del servidor.
+- Se validan movimientos ordinarios, jaque y promoción. Enroque, captura al paso y adjudicación automática de mate,
+  ahogado y tablas quedan fuera del alcance.
+- El directorio de partidas se utiliza con una instancia escritora del backend. La presencia tiene un margen de
+  12 segundos desde la última actividad y la desconexión deja la partida en juego.
+- Cada perfil opcional permite recuperar la última plaza adquirida con ese servidor. El perfil conserva una
+  credencial privada y se guarda fuera del repositorio.

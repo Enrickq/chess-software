@@ -1,5 +1,6 @@
 package software.ulpgc.chess.backend.ports;
 
+import software.ulpgc.chess.contract.PresenceView;
 import software.ulpgc.chess.contract.RoomView;
 import software.ulpgc.chess.contract.SessionView;
 
@@ -9,6 +10,7 @@ import java.util.List;
 public interface ChessUseCases {
     List<RoomView> list();
     RoomView get(String id);
+    PresenceView presence(String id, String token);
     SessionView create(String player);
     SessionView join(String id, String player);
     RoomView move(String id, String token, long version, String from, String to, String promotion);

@@ -2,6 +2,7 @@ package software.ulpgc.chess.frontend;
 
 import org.junit.jupiter.api.Test;
 import software.ulpgc.chess.contract.MoveView;
+import software.ulpgc.chess.contract.PresenceView;
 import software.ulpgc.chess.contract.RoomView;
 import software.ulpgc.chess.contract.SessionView;
 import software.ulpgc.chess.domain.model.Piece;
@@ -330,6 +331,9 @@ class SwingPresentationTest {
         private AssertionError called() { return new AssertionError("The presentation must not perform network requests on construction"); }
         @Override public CompletableFuture<List<RoomView>> rooms() { throw called(); }
         @Override public CompletableFuture<RoomView> room(String id) { throw called(); }
+        @Override public CompletableFuture<PresenceView> presence(String id, String token) {
+            return room(id).thenApply(room -> new PresenceView(room, PresenceView.OpponentPresence.UNKNOWN));
+        }
         @Override public CompletableFuture<SessionView> create(String player) { throw called(); }
         @Override public CompletableFuture<SessionView> join(String id, String player) { throw called(); }
         @Override public CompletableFuture<RoomView> move(String id, String token, String from, String to, String promotion, long version) { throw called(); }

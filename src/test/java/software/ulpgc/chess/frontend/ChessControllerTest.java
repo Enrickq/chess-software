@@ -2,6 +2,7 @@ package software.ulpgc.chess.frontend;
 
 import org.junit.jupiter.api.Test;
 import software.ulpgc.chess.contract.MoveView;
+import software.ulpgc.chess.contract.PresenceView;
 import software.ulpgc.chess.contract.RoomView;
 import software.ulpgc.chess.contract.SessionView;
 import software.ulpgc.chess.frontend.application.ChessController;
@@ -232,6 +233,9 @@ class ChessControllerTest {
         @Override public CompletableFuture<RoomView> room(String id) {
             if (disconnected) return CompletableFuture.failedFuture(new ServiceException("Desconectado"));
             return pendingRoom == null ? CompletableFuture.completedFuture(current) : pendingRoom;
+        }
+        @Override public CompletableFuture<PresenceView> presence(String id, String token) {
+            return room(id).thenApply(room -> new PresenceView(room, PresenceView.OpponentPresence.UNKNOWN));
         }
         @Override public CompletableFuture<SessionView> create(String player) {
             this.player = player;

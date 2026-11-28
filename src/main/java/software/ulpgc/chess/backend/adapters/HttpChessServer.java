@@ -95,6 +95,11 @@ public final class HttpChessServer implements AutoCloseable {
             return;
         }
         switch (parts[3]) {
+            case "presence" -> {
+                if (!allowed(exchange, "POST")) return;
+                fields(exchange, Set.of());
+                send(exchange, 200, WireCodec.encodePresence(service.presence(id, credential(exchange))));
+            }
             case "join" -> {
                 if (!allowed(exchange, "POST")) return;
                 Map<String, String> fields = fields(exchange, Set.of("player"));
