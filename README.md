@@ -4,10 +4,25 @@ Proyecto de Ingeniería de Software II: sistema de salas de ajedrez.
 
 ## Inicio rápido
 
-Instala JDK 27 y Maven. Desde la raíz del repositorio, ejecuta `mvn clean verify`. En una terminal arranca
-el backend y, en otras dos terminales, ejecuta el cliente Swing. El servidor del ejemplo escucha en el puerto
-8080 y guarda sus partidas en `data`. Las [instrucciones de ejecución](#ejecutar-las-dos-aplicaciones) incluyen
-los comandos completos, los argumentos y el arranque de clientes con perfiles separados.
+Con JDK 27 y Maven, ejecuta estos tres pasos desde la raíz del repositorio.
+
+1. Compila y ejecuta las pruebas con `mvn clean verify`.
+2. En una terminal, arranca el servidor.
+
+   ```text
+   java -jar target/chess-software-1.0.0.jar --host 127.0.0.1 --port 8080 --data data
+   ```
+
+3. En otras dos terminales, abre un cliente por jugador. Usa un archivo distinto para cada uno.
+
+   ```text
+   java -cp target/chess-software-1.0.0.jar software.ulpgc.chess.frontend.FrontendMain --server http://127.0.0.1:8080 --session-file data/ana.chess-session
+   java -cp target/chess-software-1.0.0.jar software.ulpgc.chess.frontend.FrontendMain --server http://127.0.0.1:8080 --session-file data/luis.chess-session
+   ```
+
+En Ana, crea una sala y copia su código. En Luis, pega el código y pulsa **Unirme**. Para volver después de cerrar
+uno de los clientes, ejecútalo con su mismo archivo y pulsa **Reanudar partida**. Si 8080 está ocupado, usa otro
+puerto en el servidor y en ambos clientes. [Configuración y opciones de ejecución](#ejecutar-las-dos-aplicaciones)
 
 ## Arquitectura del sistema
 
@@ -40,6 +55,25 @@ cualquiera de los jugadores y copiar su FEN para compartir exactamente la posici
 La reproducción y el cambio de orientación pertenecen al cliente. El servidor aporta el histórico común
 y valida los cambios de la partida. La [captura del recorrido manual](docs/images/manual-02-history.png) muestra
 la consulta del histórico desde la ventana de un espectador.
+
+## Evidencias de la entrega
+
+Estas imágenes muestran la interfaz Swing de la sesión 18 con datos del backend local. El caso de integración
+las exporta en modo headless. El [registro final](docs/FINAL_VERIFICATION.md) recoge la compilación en un clon
+limpio, el reinicio del servidor y la recuperación de una plaza. Las [capturas de escritorio del recorrido anterior](#capturas-manuales-del-recorrido)
+siguen enlazadas con la versión en que se tomaron.
+
+**Sala creada.** Ana tiene el código y espera a que se una Luis.
+
+![Sala creada con código disponible](docs/images/final-01-room.png)
+
+**Tablero en directo.** Ana y Luis han jugado cuatro medias jugadas.
+
+![Tablero en directo con los dos jugadores](docs/images/final-02-board.png)
+
+**Histórico.** Un espectador revisa la posición tras la segunda media jugada.
+
+![Histórico de una partida desde el modo espectador](docs/images/final-03-history.png)
 
 ## Material de partida
 
@@ -781,7 +815,7 @@ Estado de la interfaz después de recuperar la conexión con el backend:
 
 El hito `milestone-01-domain-contract` agrupa el modelo, FEN, las reglas de movimiento y el contrato compartido.
 Es una etapa intermedia del proyecto, sin punto de entrada de la aplicación completa. La versión 1.0.0 del POM
-se mantiene como identificador del artefacto durante el desarrollo; la entrega final tendrá su propia etiqueta.
+identifica el artefacto. La etiqueta de entrega es `v1.0.0`.
 
 El primer hito se comprobó con 52 pruebas. Los casos de uso del backend, la persistencia y la API HTTP quedan
 fuera de esa etiqueta.
@@ -825,6 +859,7 @@ Verificaciones locales:
 - Sesión 15, 20 de noviembre de 2026: 90 pruebas superadas en total, sin fallos, errores ni pruebas omitidas.
 - Sesión 16, 24 de noviembre de 2026: 91 pruebas superadas con JDK 27 en una copia de verificación.
 - Sesión 17, 26 de noviembre de 2026: 92 pruebas superadas con JDK 27 en una copia de verificación.
+- Sesión 18, 28 de noviembre de 2026: 92 pruebas superadas con JDK 27 en un clon limpio de `5f4bce9`.
 
 Distribución actual: ModelTest, 11; FenTest, 21; MoveRulesTest, 18; WireCodecTest, 2; ChessServiceTest, 5;
 FileRoomRepositoryTest, 5; HttpChessServerTest, 3; ChessControllerTest, 12; HttpChessServiceTest, 6;
@@ -901,7 +936,7 @@ una sesión de escritorio ni la recuperación de credenciales de jugador tras ce
 
 ## Organización de ramas
 
-- main: hitos estables.
+- main: hitos estables y versión evaluable de la entrega.
 - develop: integración del trabajo comprobado.
 - feature/01-base-model: integración del modelo.
 - feature/02-fen-serialization: integración de la serialización FEN.
@@ -920,7 +955,13 @@ una sesión de escritorio ni la recuperación de credenciales de jugador tras ce
 - feature/15-room-filters: búsqueda local de salas por nombre, código y estado.
 - feature/16-player-presence: aviso de desconexión del rival en partidas en juego.
 - feature/17-resume-player-session: recuperación de la última plaza mediante un perfil local separado por jugador.
+- feature/18-final-verification: evidencias actuales y verificación reproducible de la entrega.
 
-## Próximas etapas
+## Límites de la entrega
 
-El cierre actualizará las evidencias del escritorio y repetirá la verificación desde un clon limpio de la versión final.
+- Se validan movimientos ordinarios, jaque y promoción. Enroque, captura al paso y adjudicación automática de mate,
+  ahogado y tablas quedan fuera del alcance.
+- El directorio de partidas se utiliza con una instancia escritora del backend. La presencia tiene un margen de
+  12 segundos desde la última actividad y la desconexión deja la partida en juego.
+- Cada perfil opcional permite recuperar la última plaza adquirida con ese servidor. El perfil conserva una
+  credencial privada y se guarda fuera del repositorio.
